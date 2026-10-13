@@ -308,8 +308,11 @@ impl BridgeClient {
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, info.port));
         let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
             Ok(s) => s,
-            // A stale file left by an app that crashed.
-            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => return Err(ConnectError::NotRunning),
+            // A stale file left by an app that crashed. Windows retries a
+            // refused connection until the timeout instead of refusing.
+            Err(e) if matches!(e.kind(), io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut) => {
+                return Err(ConnectError::NotRunning)
+            }
             Err(e) => return Err(ConnectError::Io(e)),
         };
         Self::handshake(&mut stream, &key).map_err(ConnectError::Handshake)?;
