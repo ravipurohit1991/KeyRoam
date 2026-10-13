@@ -179,6 +179,54 @@ pub fn commit_local_change<T>(
     Ok(out)
 }
 
+/// Replace the vault key (see [`Vault::rotate_key`]): re-encrypt the local
+/// vault and device secrets with the new key and queue the upload of the new
+/// header and replica. Call [`sync`] afterwards.
+pub fn rotate_vault_key(
+    vault: &mut Vault,
+    store: &LocalStore,
+    password: &str,
+    cost: keyroam_core::KdfCost,
+) -> Result<()> {
+    rekey(vault, store, |v| v.rotate_key(password, cost))
+}
+
+/// Adopt a vault key rotated on another device (after [`sync`] failed with
+/// `KeyRotated`), using the master password, then re-encrypt local files.
+/// Call [`sync`] afterwards.
+pub fn adopt_rotated_key(
+    vault: &mut Vault,
+    store: &LocalStore,
+    remote: &dyn RemoteStore,
+    password: &str,
+) -> Result<()> {
+    let header = fetch_remote_header(remote)?;
+    rekey(vault, store, |v| v.adopt_rotated_header(&header, password))
+}
+
+fn rekey(
+    vault: &mut Vault,
+    store: &LocalStore,
+    change: impl FnOnce(&mut Vault) -> keyroam_core::Result<()>,
+) -> Result<()> {
+    let _lock = store.lock()?;
+    let secrets = match store.load_secrets()? {
+        Some(f) => Some(vault.open_secrets(&f)?),
+        None => None,
+    };
+    change(vault)?;
+    // Another process may have saved under the old key meanwhile.
+    store.absorb(vault)?;
+    store.save_vault(&vault.to_local_file()?, true)?;
+    if let Some(s) = secrets {
+        store.save_secrets(&vault.seal_secrets(&s)?)?;
+    }
+    let mut st = SyncState::for_vault(store, vault)?;
+    st.pending_upload = true;
+    st.local_generation += 1;
+    st.save(store)
+}
+
 /// Run one synchronisation round ("Sync Now"). On failure the local vault is
 /// untouched apart from merges already saved, and the error is recorded in
 /// the sync state for display.
@@ -287,7 +335,12 @@ fn sync_inner(
                 }
                 st.seen_versions.insert(f.id.clone(), f.version.clone());
             }
-            Err(SyncError::Core(e)) if !matches!(e, keyroam_core::Error::UnsupportedVersion { .. }) => {
+            Err(SyncError::Core(e))
+                if !matches!(
+                    e,
+                    keyroam_core::Error::UnsupportedVersion { .. } | keyroam_core::Error::KeyRotated
+                ) =>
+            {
                 report.warnings.push(format!("skipped replica {}: {e}", f.name));
             }
             Err(e) => return Err(e),

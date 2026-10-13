@@ -410,6 +410,43 @@ Future<String?> showImportDialog(BuildContext context, AppController c) {
   );
 }
 
+Future<String?> showRotateKeyDialog(BuildContext context, AppController c) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _ActionDialog(
+      title: 'Replace vault key',
+      description:
+          'Creates a new encryption key for your vault. Use it if an old master password or device may be '
+          'compromised: data you save from now on cannot be read with the old key. Each of your other devices '
+          'asks for the master password once.',
+      action: 'Replace key',
+      passwordLabels: const ['Master password'],
+      run: (_, pw) async {
+        await c.rotateVaultKey(pw[0]);
+        return 'Vault key replaced';
+      },
+    ),
+  );
+}
+
+Future<String?> showAdoptKeyDialog(BuildContext context, AppController c) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _ActionDialog(
+      title: 'New vault key',
+      description:
+          'The vault key was replaced on another device. Enter your master password to switch this device '
+          'to the new key.',
+      action: 'Continue',
+      passwordLabels: const ['Master password'],
+      run: (_, pw) async {
+        await c.adoptRotatedKey(pw[0]);
+        return 'Now using the new vault key';
+      },
+    ),
+  );
+}
+
 Future<String?> showChangePasswordDialog(BuildContext context, AppController c) {
   return showDialog<String>(
     context: context,

@@ -211,6 +211,7 @@ class FakeKeyRoamApi implements KeyRoamApi {
   @override
   Future<SyncResult> sync() async {
     syncCount++;
+    if (remoteKeyRotated) throw const KeyRoamException('key_rotated', 'the vault key was replaced');
     if (offline) {
       syncStatus = 'offline';
       throw const KeyRoamException('offline', 'network unavailable');
@@ -234,6 +235,23 @@ class FakeKeyRoamApi implements KeyRoamApi {
     final id = seed(data);
     revision++;
     return id;
+  }
+
+  bool remoteKeyRotated = false;
+
+  @override
+  Future<AppState> rotateVaultKey(String password) async {
+    if (password != this.password) throw const KeyRoamException('wrong_password', 'wrong');
+    _log('rotateVaultKey');
+    return _state;
+  }
+
+  @override
+  Future<OnboardingResult> adoptRotatedKey(String password) async {
+    if (password != this.password) throw const KeyRoamException('wrong_password', 'wrong');
+    _log('adoptRotatedKey');
+    remoteKeyRotated = false;
+    return OnboardingResult(_state, report: const SyncReport());
   }
 
   @override

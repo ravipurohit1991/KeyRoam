@@ -323,6 +323,46 @@ fn second_process_on_same_data_dir_is_merged_and_uploaded() {
 }
 
 #[test]
+fn vault_key_rotation_propagates_with_the_password() {
+    let remote = MemoryRemote::default();
+    let mut a = new_user(&remote);
+    let mut b = join(&remote, PW);
+    let id = a.add("Example", "before");
+    a.sync(&remote).unwrap();
+    b.sync(&remote).unwrap();
+    let edited_offline = b.add("Offline on b", "b-1");
+
+    rotate_vault_key(&mut a.vault, &a.store, PW, KdfCost::MINIMUM).unwrap();
+    a.edit(id, "after");
+    let r = a.sync(&remote).unwrap();
+    assert!(r.header_uploaded && r.uploaded);
+    // Everything on Drive and on disk now uses the new key.
+    assert_eq!(a.reopen(PW).unwrap().key_epoch(), 2);
+    let secrets = a.store.load_secrets().unwrap().unwrap();
+    assert!(a.vault.open_secrets(&secrets).is_ok());
+
+    // b must enter the master password before it syncs again.
+    let err = b.sync(&remote).unwrap_err();
+    assert!(
+        matches!(err, SyncError::Core(keyroam_core::Error::KeyRotated)),
+        "{err:?}"
+    );
+    assert!(adopt_rotated_key(&mut b.vault, &b.store, &remote, "wrong-password-xyz").is_err());
+    adopt_rotated_key(&mut b.vault, &b.store, &remote, PW).unwrap();
+    b.sync(&remote).unwrap();
+    assert_eq!(b.password_of(id), "after");
+    assert_eq!(b.reopen(PW).unwrap().key_epoch(), 2);
+
+    // a reads b's (now re-encrypted) replica, including b's offline edit.
+    a.sync(&remote).unwrap();
+    assert_eq!(a.password_of(edited_offline), "b-1");
+
+    // A new device joins with the rotated header.
+    let c = join(&remote, PW);
+    assert_eq!(c.vault.entries().count(), 2);
+}
+
+#[test]
 fn password_change_propagates() {
     let remote = MemoryRemote::default();
     let mut a = new_user(&remote);

@@ -25,6 +25,10 @@ class Dashboard extends StatelessWidget {
         message = await showImportDialog(context, controller);
       case 'password':
         message = await showChangePasswordDialog(context, controller);
+      case 'rotate':
+        message = await showRotateKeyDialog(context, controller);
+      case 'adoptKey':
+        message = await showAdoptKeyDialog(context, controller);
       case 'deleted':
         await showDeletedDialog(context, controller);
       case 'browser':
@@ -59,6 +63,24 @@ class Dashboard extends StatelessWidget {
     final state = controller.state!;
     return Scaffold(
       appBar: AppBar(
+        bottom: controller.keyRotated
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: Material(
+                  color: Theme.of(context).colorScheme.tertiaryContainer,
+                  child: ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.key),
+                    title: const Text('The vault key was replaced on another device.'),
+                    trailing: TextButton(
+                      key: const Key('adoptKey'),
+                      onPressed: () => _menu(context, 'adoptKey'),
+                      child: const Text('Enter master password'),
+                    ),
+                  ),
+                ),
+              )
+            : null,
         title: const Row(
           children: [
             Icon(Icons.key_rounded),
@@ -86,6 +108,7 @@ class Dashboard extends StatelessWidget {
               const PopupMenuItem(value: 'export', child: Text('Export encrypted backup…')),
               const PopupMenuItem(value: 'import', child: Text('Restore from backup…')),
               const PopupMenuItem(value: 'password', child: Text('Change master password…')),
+              const PopupMenuItem(value: 'rotate', child: Text('Replace vault key…')),
               if (PlatformPaths.isDesktop) const PopupMenuItem(value: 'browser', child: Text('Browser integration…')),
               const PopupMenuDivider(),
               if (state.signedIn)

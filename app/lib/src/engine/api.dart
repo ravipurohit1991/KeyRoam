@@ -58,6 +58,12 @@ abstract class KeyRoamApi {
   Future<ImportResult> importBackup(String path, String password);
   Future<void> changePassword(String current, String newPassword);
 
+  /// Replace the vault key with a fresh one (see docs/security.md).
+  Future<AppState> rotateVaultKey(String password);
+
+  /// Adopt a vault key replaced on another device, then sync.
+  Future<OnboardingResult> adoptRotatedKey(String password);
+
   // Browser integration (desktop).
   Future<AppState> setBrowserIntegration(bool enabled);
 
@@ -172,6 +178,13 @@ class NativeKeyRoamApi implements KeyRoamApi {
   @override
   Future<void> changePassword(String current, String newPassword) =>
       _call('change_password', {'current': current, 'new': newPassword});
+
+  @override
+  Future<AppState> rotateVaultKey(String password) => _state('rotate_vault_key', {'password': password});
+
+  @override
+  Future<OnboardingResult> adoptRotatedKey(String password) async =>
+      OnboardingResult.fromJson(await _call('adopt_rotated_key', {'password': password}) as Map<String, dynamic>);
 
   @override
   Future<AppState> setBrowserIntegration(bool enabled) => _state('set_browser_integration', {'enabled': enabled});

@@ -9,7 +9,7 @@ use crate::crypto::SecretKey;
 use crate::envelope::{open_json, seal_json, PayloadContext, PayloadKind};
 use crate::error::{Error, Result};
 use crate::files::*;
-use crate::header::VaultHeader;
+use crate::header::{PreviousKey, VaultHeader};
 use crate::kdf::KdfCost;
 use crate::model::{DeviceId, EntryData, EntryId, EntryRecord, VaultState};
 use crate::now_millis;
@@ -35,6 +35,8 @@ impl std::fmt::Debug for LocalSecrets {
 pub struct Vault {
     header: VaultHeader,
     key: SecretKey,
+    /// Earlier vault keys (after key rotations), to read data written before.
+    previous: Vec<PreviousKey>,
     device_id: DeviceId,
     state: VaultState,
 }
@@ -62,6 +64,7 @@ impl Vault {
         Ok(Vault {
             header,
             key,
+            previous: Vec::new(),
             device_id: Uuid::new_v4(),
             state: VaultState::default(),
         })
@@ -70,11 +73,13 @@ impl Vault {
     /// Unlock this device's local vault file.
     pub fn open(file: &LocalVaultFile, password: &str) -> Result<Vault> {
         let key = file.header.unlock(password)?;
+        let previous = file.header.previous_keys(&key)?;
         let state: VaultState = open_json(&key, &local_ctx(file.header.vault_id, file.device_id), &file.payload)?;
         state.validate()?;
         Ok(Vault {
             header: file.header.clone(),
             key,
+            previous,
             device_id: file.device_id,
             state,
         })
@@ -83,12 +88,34 @@ impl Vault {
     /// Join an existing vault (downloaded header) as a new device.
     pub fn join(header: VaultHeader, password: &str) -> Result<Vault> {
         let key = header.unlock(password)?;
+        let previous = header.previous_keys(&key)?;
         Ok(Vault {
             header,
             key,
+            previous,
             device_id: Uuid::new_v4(),
             state: VaultState::default(),
         })
+    }
+
+    pub fn key_epoch(&self) -> u32 {
+        self.header.key_epoch
+    }
+
+    /// The vault key of `epoch`: the current one or an earlier one. A newer
+    /// epoch means the key was rotated elsewhere and this device must adopt it.
+    fn key_for(&self, epoch: u32) -> Result<&SecretKey> {
+        if epoch == self.header.key_epoch {
+            return Ok(&self.key);
+        }
+        if epoch > self.header.key_epoch {
+            return Err(Error::KeyRotated);
+        }
+        self.previous
+            .iter()
+            .find(|(e, _)| *e == epoch)
+            .map(|(_, k)| k)
+            .ok_or(Error::Authentication)
     }
 
     pub fn header(&self) -> &VaultHeader {
@@ -284,7 +311,23 @@ impl Vault {
         if header.vault_id != self.header.vault_id {
             return Err(Error::VaultMismatch);
         }
-        header.verify(&self.key)?;
+        match header.key_epoch.cmp(&self.header.key_epoch) {
+            std::cmp::Ordering::Greater => return Err(Error::KeyRotated),
+            std::cmp::Ordering::Less => {
+                // A header from before our key rotation: stale.
+                header.verify(self.key_for(header.key_epoch)?)?;
+                return Ok(false);
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+        if let Err(e) = header.verify(&self.key) {
+            // Two devices rotated concurrently: the cloud copy wins, which
+            // needs the master password.
+            if header.key_epoch >= 2 && header.revision >= self.header.revision {
+                return Err(Error::KeyRotated);
+            }
+            return Err(e);
+        }
         if header.revision > self.header.revision || (header.revision == self.header.revision && header != &self.header)
         {
             self.header = header.clone();
@@ -300,9 +343,53 @@ impl Vault {
         if file.header.vault_id != self.vault_id() || file.device_id != self.device_id {
             return Err(Error::VaultMismatch);
         }
-        let state: VaultState = open_json(&self.key, &local_ctx(self.vault_id(), self.device_id), &file.payload)?;
+        let key = self.key_for(file.header.key_epoch)?;
+        let state: VaultState = open_json(key, &local_ctx(self.vault_id(), self.device_id), &file.payload)?;
         let header_changed = self.adopt_header(&file.header)?;
         Ok(self.merge_state(&state)? || header_changed)
+    }
+
+    // ----- Vault-key rotation -----
+
+    /// Replace the vault key with a fresh one. Everything this device writes
+    /// from now on is encrypted with it; other devices adopt it with the
+    /// master password ([`Vault::adopt_rotated_header`]).
+    pub fn rotate_key(&mut self, password: &str, cost: KdfCost) -> Result<()> {
+        if !self.verify_password(password) {
+            return Err(Error::WrongPassword);
+        }
+        let (header, key) = self.header.rotate(&self.key, password, cost)?;
+        self.previous = header.previous_keys(&key)?;
+        self.key = key;
+        self.header = header;
+        Ok(())
+    }
+
+    /// Adopt a header whose vault key was rotated on another device, using
+    /// the master password. The header's list of earlier keys must include a
+    /// key this device holds, so it really continues this vault.
+    pub fn adopt_rotated_header(&mut self, header: &VaultHeader, password: &str) -> Result<()> {
+        if header.vault_id != self.vault_id() {
+            return Err(Error::VaultMismatch);
+        }
+        if header.key_epoch < self.header.key_epoch || header == &self.header {
+            return Err(Error::InvalidInput(
+                "this device already uses the newest vault key".into(),
+            ));
+        }
+        let key = header.unlock(password)?;
+        let previous = header.previous_keys(&key)?;
+        let known = std::iter::once(&self.key).chain(self.previous.iter().map(|(_, k)| k));
+        let continues = known
+            .into_iter()
+            .any(|mine| previous.iter().any(|(_, k)| k.as_bytes() == mine.as_bytes()));
+        if !continues {
+            return Err(Error::VaultMismatch);
+        }
+        self.key = key;
+        self.previous = previous;
+        self.header = header.clone();
+        Ok(())
     }
 
     // ----- Sync payloads -----
@@ -313,6 +400,7 @@ impl Vault {
             version: FILE_VERSION,
             vault_id: self.vault_id(),
             device_id: self.device_id,
+            key_epoch: self.header.key_epoch,
             written_at: now_millis(),
             payload: seal_json(&self.key, &replica_ctx(self.vault_id(), self.device_id), &self.state)?,
         })
@@ -323,7 +411,8 @@ impl Vault {
         if file.vault_id != self.vault_id() {
             return Err(Error::VaultMismatch);
         }
-        let state: VaultState = open_json(&self.key, &replica_ctx(file.vault_id, file.device_id), &file.payload)?;
+        let key = self.key_for(file.key_epoch)?;
+        let state: VaultState = open_json(key, &replica_ctx(file.vault_id, file.device_id), &file.payload)?;
         state.validate()?;
         Ok(state)
     }
@@ -371,7 +460,16 @@ impl Vault {
         if file.vault_id != self.vault_id() || file.device_id != self.device_id {
             return Err(Error::VaultMismatch);
         }
-        open_json(&self.key, &secrets_ctx(file.vault_id, file.device_id), &file.payload)
+        // Sealed with the current key, or an earlier one before a rotation.
+        let ctx = secrets_ctx(file.vault_id, file.device_id);
+        let mut result = open_json(&self.key, &ctx, &file.payload);
+        for (_, key) in &self.previous {
+            if result.is_ok() {
+                break;
+            }
+            result = open_json(key, &ctx, &file.payload);
+        }
+        result
     }
 }
 
@@ -515,6 +613,97 @@ mod tests {
         b.delete_entry(keep).unwrap();
         assert_eq!(b.purge_deleted().unwrap(), 1);
         assert_eq!(b.entries().count() + b.deleted_entries().count(), 0);
+    }
+
+    #[test]
+    fn key_rotation_across_devices() {
+        let mut a = Vault::create(PW, KdfCost::MINIMUM).unwrap();
+        let id = a.add_entry(entry("Example", "synthetic-1")).unwrap();
+        let mut b = Vault::join(a.header().clone(), PW).unwrap();
+        b.merge_state(&b.open_replica(&a.seal_replica().unwrap()).unwrap())
+            .unwrap();
+        let old_key_holder = Vault::join(a.header().clone(), PW).unwrap();
+
+        assert!(matches!(
+            a.rotate_key("wrong-password-xyz", KdfCost::MINIMUM),
+            Err(Error::WrongPassword)
+        ));
+        a.rotate_key(PW, KdfCost::MINIMUM).unwrap();
+        assert_eq!(a.key_epoch(), 2);
+        a.update_entry(id, entry("Example", "after-rotation")).unwrap();
+        let new_replica = a.seal_replica().unwrap();
+        assert_eq!(new_replica.key_epoch, 2);
+        // Someone holding the old key cannot read what is written now.
+        assert!(old_key_holder.open_replica(&new_replica).is_err());
+
+        // b, still on the old key, keeps working offline; its replica stays
+        // readable for a.
+        b.update_entry(id, entry("Example", "edit-on-b")).unwrap();
+        let lagging = b.seal_replica().unwrap();
+        assert_eq!(lagging.key_epoch, 1);
+        a.merge_state(&a.open_replica(&lagging).unwrap()).unwrap();
+        assert_eq!(a.conflicts().count(), 1);
+
+        // b sees the rotated header: it needs the master password.
+        assert!(matches!(b.adopt_header(a.header()), Err(Error::KeyRotated)));
+        assert!(matches!(b.open_replica(&new_replica), Err(Error::KeyRotated)));
+        assert!(matches!(
+            b.adopt_rotated_header(a.header(), "wrong-password-xyz"),
+            Err(Error::WrongPassword)
+        ));
+        b.adopt_rotated_header(a.header(), PW).unwrap();
+        assert_eq!(b.key_epoch(), 2);
+        b.merge_state(&b.open_replica(&new_replica).unwrap()).unwrap();
+        assert_eq!(a.seal_replica().unwrap().key_epoch, b.seal_replica().unwrap().key_epoch);
+        // a sees b's old header as stale.
+        assert!(!a.adopt_header(old_key_holder.header()).unwrap());
+
+        // Local files: reopen with the password, and old-epoch local files
+        // (written by another process before the rotation) still merge.
+        let reopened = Vault::open(&b.to_local_file().unwrap(), PW).unwrap();
+        assert_eq!(reopened.key_epoch(), 2);
+        let mut b2 = Vault::open(&b.to_local_file().unwrap(), PW).unwrap();
+        let stale = {
+            let mut f = b.to_local_file().unwrap();
+            f.header = old_key_holder.header().clone();
+            f.payload = seal_json(&old_key_holder.key, &local_ctx(b.vault_id(), b.device_id()), b.state()).unwrap();
+            f
+        };
+        b2.absorb_local(&stale).unwrap();
+        assert_eq!(b2.key_epoch(), 2);
+
+        // Secrets sealed before the rotation stay readable.
+        let s = LocalSecrets {
+            google_refresh_token: Some("synthetic-refresh".into()),
+        };
+        let sealed_old = old_key_holder.seal_secrets(&s).unwrap();
+        let mut c = Vault::join(old_key_holder.header().clone(), PW).unwrap();
+        c.device_id = old_key_holder.device_id;
+        c.adopt_rotated_header(a.header(), PW).unwrap();
+        assert_eq!(c.open_secrets(&sealed_old).unwrap(), s);
+
+        // A rotated header of another vault, or one that does not continue
+        // this vault's keys, is refused.
+        let mut other = Vault::create(PW, KdfCost::MINIMUM).unwrap();
+        other.rotate_key(PW, KdfCost::MINIMUM).unwrap();
+        assert!(matches!(
+            b.adopt_rotated_header(other.header(), PW),
+            Err(Error::VaultMismatch)
+        ));
+        assert!(b.adopt_rotated_header(a.header(), PW).is_err(), "already adopted");
+    }
+
+    #[test]
+    fn concurrent_rotations_cloud_copy_wins_with_password() {
+        let mut a = Vault::create(PW, KdfCost::MINIMUM).unwrap();
+        let mut b = Vault::join(a.header().clone(), PW).unwrap();
+        a.rotate_key(PW, KdfCost::MINIMUM).unwrap();
+        b.rotate_key(PW, KdfCost::MINIMUM).unwrap();
+        // a's header reached Drive first.
+        assert!(matches!(b.adopt_header(a.header()), Err(Error::KeyRotated)));
+        b.adopt_rotated_header(a.header(), PW).unwrap();
+        assert!(!b.adopt_header(a.header()).unwrap());
+        assert!(a.open_replica(&b.seal_replica().unwrap()).is_ok());
     }
 
     #[test]

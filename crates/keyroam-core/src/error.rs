@@ -29,6 +29,8 @@ pub enum Error {
     NoVault,
     #[error("a vault already exists in this location")]
     VaultExists,
+    #[error("the vault key was replaced on another device; enter your master password to continue")]
+    KeyRotated,
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }

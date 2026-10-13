@@ -261,6 +261,38 @@ void main() {
     await finish(tester, c);
   });
 
+  testWidgets('vault key: replace it here, adopt one replaced elsewhere', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true)..signedIn = true;
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Replace vault key…'));
+    await tester.pumpAndSettle();
+    final field = find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextField));
+    await tester.enterText(field.first, pw);
+    await tester.tap(find.text('Replace key'));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('rotateVaultKey'));
+
+    // Another device replaced the key: sync stops and asks for the password.
+    api.remoteKeyRotated = true;
+    await tester.tap(find.byKey(const Key('syncNow')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('adoptKey')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('adoptKey')));
+    await tester.pumpAndSettle();
+    await tester.enterText(field.first, pw);
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('adoptRotatedKey'));
+    expect(find.byKey(const Key('adoptKey')), findsNothing);
+    await finish(tester, c);
+  });
+
   testWidgets('locks when the operating system locks or sleeps', (tester) async {
     final api = FakeKeyRoamApi(hasVault: true);
     final c = await start(tester, api);

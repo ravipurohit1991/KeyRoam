@@ -22,7 +22,8 @@ pub mod testing;
 
 pub use drive::DriveClient;
 pub use engine::{
-    commit_local_change, create_vault, fetch_remote_header, join_vault, sync, SyncReport, SyncState, SyncStatus,
+    adopt_rotated_key, commit_local_change, create_vault, fetch_remote_header, join_vault, rotate_vault_key, sync,
+    SyncReport, SyncState, SyncStatus,
 };
 pub use error::{Result, SyncError};
 pub use oauth::{

@@ -32,8 +32,9 @@ use keyroam_core::{
 };
 use keyroam_sync::oauth::revoke_token;
 use keyroam_sync::{
-    commit_local_change, create_vault, fetch_remote_header, join_vault, open_system_browser, sync, DriveClient,
-    GoogleSession, OAuthClientConfig, PendingAuthorization, RemoteStore, SyncError, SyncReport, SyncState, SyncStatus,
+    adopt_rotated_key, commit_local_change, create_vault, fetch_remote_header, join_vault, open_system_browser,
+    rotate_vault_key, sync, DriveClient, GoogleSession, OAuthClientConfig, PendingAuthorization, RemoteStore,
+    SyncError, SyncReport, SyncState, SyncStatus,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -70,6 +71,7 @@ impl From<keyroam_core::Error> for ApiError {
             E::InvalidInput(_) => "invalid_input",
             E::NoVault => "no_vault",
             E::VaultExists => "vault_exists",
+            E::KeyRotated => "key_rotated",
             E::Io(_) => "io",
         };
         ApiError::new(code, e.to_string())
@@ -111,6 +113,7 @@ fn clone_core(e: &keyroam_core::Error) -> keyroam_core::Error {
         E::InvalidInput(s) => E::InvalidInput(s.clone()),
         E::NoVault => E::NoVault,
         E::VaultExists => E::VaultExists,
+        E::KeyRotated => E::KeyRotated,
         E::Io(io) => E::Io(std::io::Error::new(io.kind(), io.to_string())),
     }
 }
@@ -365,6 +368,8 @@ impl Engine {
             "export_backup" => self.export(params(p)?),
             "import_backup" => self.import(params(p)?),
             "change_password" => self.change_password(params(p)?),
+            "rotate_vault_key" => self.rotate_key(params(p)?),
+            "adopt_rotated_key" => self.adopt_key(params(p)?),
             "sign_out" => self.sign_out(),
             "set_browser_integration" => {
                 #[derive(Deserialize)]
@@ -822,6 +827,45 @@ impl Engine {
         // Argon2 for the new password runs once, under the data-directory lock.
         commit_local_change(vault, store, true, |v| v.change_password(&current, &new, self.kdf_cost))?;
         Ok(Value::Null)
+    }
+}
+
+impl Engine {
+    /// Replace the vault key; the new header and replica upload on the next sync.
+    fn rotate_key(&self, p: PasswordParams) -> ApiResult {
+        let password = Zeroizing::new(p.password);
+        let mut guard = lock(&self.session);
+        let s = &mut *guard;
+        let store = Self::store(s)?.clone();
+        let vault = s
+            .vault
+            .as_mut()
+            .ok_or_else(|| ApiError::new("locked", "the vault is locked"))?;
+        rotate_vault_key(vault, &store, &password, self.kdf_cost)?;
+        Ok(serde_json::to_value(self.state_of(s))?)
+    }
+
+    /// After a sync failed with `key_rotated`: adopt the new key with the
+    /// master password, then sync.
+    fn adopt_key(&self, p: PasswordParams) -> ApiResult {
+        let password = Zeroizing::new(p.password);
+        let mut guard = lock(&self.session);
+        let s = &mut *guard;
+        let store = Self::store(s)?.clone();
+        let remote = s
+            .remote
+            .as_ref()
+            .ok_or_else(|| ApiError::new("not_signed_in", "this device is not signed in to Google"))?;
+        let vault = s
+            .vault
+            .as_mut()
+            .ok_or_else(|| ApiError::new("locked", "the vault is locked"))?;
+        adopt_rotated_key(vault, &store, remote.as_ref(), &password)?;
+        let sync = match sync(vault, &store, remote.as_ref()) {
+            Ok(r) => json!({ "report": report_json(&r) }),
+            Err(e) => json!({ "error": ApiError::from(e).message }),
+        };
+        Ok(json!({ "state": self.state_of(s), "sync": sync }))
     }
 }
 

@@ -248,6 +248,39 @@ fn offline_lock_unlock_and_password_change() {
 }
 
 #[test]
+fn vault_key_rotation_between_devices() {
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    let id = a.add("Example", "synthetic-1");
+    a.ok("sync", json!({}));
+    let b = Device::new();
+    b.sign_in(&remote);
+    b.ok("fetch_remote_vault", json!({}));
+    b.ok("join_vault", json!({ "password": PW }));
+
+    assert_eq!(
+        a.err("rotate_vault_key", json!({ "password": "wrong-password-xyz" })),
+        "wrong_password"
+    );
+    a.ok("rotate_vault_key", json!({ "password": PW }));
+    a.ok("sync", json!({}));
+    assert_eq!(b.err("sync", json!({})), "key_rotated");
+    assert_eq!(
+        b.err("adopt_rotated_key", json!({ "password": "wrong-password-xyz" })),
+        "wrong_password"
+    );
+    let r = b.ok("adopt_rotated_key", json!({ "password": PW }));
+    assert!(r["sync"]["report"].is_object(), "{r}");
+    assert_eq!(b.password(&id), "synthetic-1");
+    // The re-encrypted local vault and secrets open with the password.
+    b.ok("lock", json!({}));
+    assert_eq!(b.ok("unlock", json!({ "password": PW }))["signed_in"], true);
+    assert_eq!(b.password(&id), "synthetic-1");
+}
+
+#[test]
 fn backup_export_import() {
     let remote = Shared(Arc::new(MemoryRemote::default()));
     let a = Device::new();

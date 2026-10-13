@@ -46,6 +46,10 @@ class AppController extends ChangeNotifier {
   EntryDetail? selected;
   bool syncing = false;
 
+  /// The vault key was replaced on another device; sync waits for the
+  /// master password.
+  bool keyRotated = false;
+
   /// One-shot message for a snackbar; consumed by the UI.
   String? notice;
 
@@ -269,6 +273,9 @@ class AppController extends ChangeNotifier {
         // Retry when connectivity returns.
         _retry = Timer(timings.offlineRetry, () => syncNow(quiet: true));
         if (!quiet) _say('Offline. Changes are saved on this device and will sync later.');
+      } else if (e.code == 'key_rotated') {
+        keyRotated = true;
+        if (!quiet) _say('The vault key was replaced on another device. Enter your master password to continue.');
       } else if (e.code == 'auth_required') {
         _say('Google sign-in expired. Sign in again from the menu.');
       } else if (!quiet || e.code != 'not_configured') {
@@ -342,6 +349,20 @@ class AppController extends ChangeNotifier {
     await api.changePassword(current, newPassword);
     await _modified();
     _say('Master password changed. Other devices will use it after they sync.');
+  }
+
+  Future<void> rotateVaultKey(String password) async {
+    state = await api.rotateVaultKey(password);
+    await _modified();
+    _say('Vault key replaced. Your other devices will ask for the master password once.');
+  }
+
+  Future<void> adoptRotatedKey(String password) async {
+    final r = await api.adoptRotatedKey(password);
+    keyRotated = false;
+    state = r.state;
+    await refreshEntries();
+    _say(r.syncError == null ? 'Now using the new vault key' : 'New vault key in use. Sync will retry: ${r.syncError}');
   }
 
   Future<ImportResult> importBackup(String path, String password) async {

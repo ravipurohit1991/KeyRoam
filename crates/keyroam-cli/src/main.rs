@@ -13,8 +13,9 @@ use keyroam_core::{
     now_millis, BackupFile, EntryData, EntryRecord, KdfCost, LocalSecrets, LocalStore, LocalVaultFile, Vault,
 };
 use keyroam_sync::{
-    authorize_installed_app, commit_local_change, create_vault, fetch_remote_header, join_vault, sync, DriveClient,
-    GoogleSession, OAuthClientConfig, SyncError, SyncReport, SyncState, SyncStatus,
+    adopt_rotated_key, authorize_installed_app, commit_local_change, create_vault, fetch_remote_header, join_vault,
+    rotate_vault_key, sync, DriveClient, GoogleSession, OAuthClientConfig, SyncError, SyncReport, SyncState,
+    SyncStatus,
 };
 use zeroize::Zeroizing;
 
@@ -147,6 +148,9 @@ enum Cmd {
     Import { path: PathBuf },
     /// Change the master password on all devices.
     Passwd,
+    /// Replace the vault key with a fresh one (other devices ask for the
+    /// master password once).
+    RotateKey,
 }
 
 /// Reads secrets from the terminal, or from stdin lines with --password-stdin.
@@ -502,10 +506,29 @@ fn run(cli: Cli) -> CliResult {
             }
         }
         Cmd::Sync => {
-            let (mut vault, _pw) = ctx.unlock()?;
+            let (mut vault, pw) = ctx.unlock()?;
             let drive = ctx.drive(&vault)?;
-            let r = sync(&mut vault, &ctx.store, &drive)?;
+            let r = match sync(&mut vault, &ctx.store, &drive) {
+                Err(SyncError::Core(keyroam_core::Error::KeyRotated)) => {
+                    println!("The vault key was replaced on another device; switching to the new key.");
+                    match adopt_rotated_key(&mut vault, &ctx.store, &drive, &pw) {
+                        Err(SyncError::Core(keyroam_core::Error::WrongPassword)) => {
+                            let current = ctx.prompt.secret("Master password set on the other device: ")?;
+                            adopt_rotated_key(&mut vault, &ctx.store, &drive, &current)?;
+                        }
+                        r => r?,
+                    }
+                    sync(&mut vault, &ctx.store, &drive)?
+                }
+                r => r?,
+            };
             report_sync(&r, false);
+        }
+        Cmd::RotateKey => {
+            let (mut vault, pw) = ctx.unlock()?;
+            rotate_vault_key(&mut vault, &ctx.store, &pw, KdfCost::DEFAULT)?;
+            println!("Vault key replaced. Your other devices will ask for the master password once.");
+            ctx.auto_sync(&mut vault);
         }
         Cmd::List { search, deleted } => {
             let (mut vault, _pw) = ctx.unlock()?;
