@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>KeyRoam</title>
+    <link rel="stylesheet" href="../popup/theme.css" />
+    <link rel="stylesheet" href="savebar.css" />
+  </head>
+  <body>
+    <main id="bar" hidden>
+      <header>
+        <img src="../icons/icon-32.png" alt="" width="20" height="20" />
+        <strong id="question"></strong>
+      </header>
+      <p id="detail"></p>
+      <div class="actions">
+        <button id="dismiss" type="button" class="secondary">Not now</button>
+        <button id="save" type="button" class="primary">Save</button>
+      </div>
+    </main>
+    <script type="module" src="savebar.js"></script>
+  </body>
+</html>
