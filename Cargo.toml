@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = ["crates/keyroam-core", "crates/keyroam-sync", "crates/keyroam-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+argon2 = { version = "0.5", features = ["zeroize"] }
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "1"
+unicode-normalization = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+zeroize = { version = "1", features = ["derive"] }
+ureq = { version = "2", features = ["json"] }
+clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
+dirs = "5"
+proptest = "1"
+tempfile = "3"
+
+# Argon2 is deliberately expensive. Optimise it even in debug/test builds so the
+# test-suite can use production-strength KDF parameters instead of weakened ones.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

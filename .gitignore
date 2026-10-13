@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+
+# Never commit vault data, backups or local secrets
+*.krv
+*.krs
+*.krbackup
+sync-state.json
+.env
+.env.*
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

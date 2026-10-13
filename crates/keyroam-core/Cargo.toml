@@ -1,0 +1,26 @@
+[package]
+name = "keyroam-core"
+description = "KeyRoam encrypted vault engine: key derivation, authenticated encryption, vault model and conflict-free merge."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+argon2.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+unicode-normalization.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

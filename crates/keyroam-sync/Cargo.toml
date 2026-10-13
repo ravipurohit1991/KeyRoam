@@ -1,0 +1,23 @@
+[package]
+name = "keyroam-sync"
+description = "KeyRoam Google OAuth (PKCE) and conflict-safe Google Drive appDataFolder synchronisation."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+keyroam-core = { path = "../keyroam-core" }
+base64.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+ureq.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

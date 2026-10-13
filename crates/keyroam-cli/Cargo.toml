@@ -1,0 +1,22 @@
+[package]
+name = "keyroam-cli"
+description = "KeyRoam command-line client (reference front-end for the vault and sync engine)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "keyroam"
+path = "src/main.rs"
+
+[dependencies]
+keyroam-core = { path = "../keyroam-core" }
+keyroam-sync = { path = "../keyroam-sync" }
+clap.workspace = true
+dirs.workspace = true
+rpassword.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+keyroam-core = { path = "../keyroam-core" }
+tempfile.workspace = true
