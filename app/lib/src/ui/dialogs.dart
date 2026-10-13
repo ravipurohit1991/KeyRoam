@@ -468,3 +468,97 @@ Future<void> showSignInDialog(BuildContext context, AppController c, Widget sign
     builder: (_) => AlertDialog(content: SizedBox(width: 480, child: signInStep)),
   );
 }
+
+/// Turn browser integration on or off and register KeyRoam with browsers.
+Future<void> showBrowserIntegrationDialog(BuildContext context, AppController c) {
+  return showDialog<void>(
+    context: context,
+    builder: (_) => _BrowserIntegrationDialog(controller: c),
+  );
+}
+
+class _BrowserIntegrationDialog extends StatefulWidget {
+  const _BrowserIntegrationDialog({required this.controller});
+  final AppController controller;
+
+  @override
+  State<_BrowserIntegrationDialog> createState() => _BrowserIntegrationDialogState();
+}
+
+class _BrowserIntegrationDialogState extends State<_BrowserIntegrationDialog> {
+  bool _busy = false;
+  String? _message;
+
+  AppController get _c => widget.controller;
+
+  Future<void> _run(Future<String?> Function() action) async {
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    String? message;
+    try {
+      message = await action();
+    } on KeyRoamException catch (e) {
+      message = e.message;
+    }
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _message = message;
+    });
+  }
+
+  Future<String?> _toggle(bool enabled) async {
+    await _c.setBrowserIntegration(enabled);
+    return null;
+  }
+
+  Future<String?> _register() async {
+    final browsers = await _c.installBrowserHost();
+    if (browsers.isEmpty) return 'No supported browser was found.';
+    return 'Registered with ${browsers.join(', ')}. Restart the browser if it is open.';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = _c.state?.browserIntegration ?? false;
+    return AlertDialog(
+      title: const Text('Browser integration'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              key: const Key('browserIntegration'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Fill passwords with the KeyRoam browser extension'),
+              subtitle: const Text(
+                'Only while KeyRoam is unlocked, only on the website a login was saved for, '
+                'and only when you choose a login.',
+              ),
+              value: enabled,
+              onChanged: _busy ? null : (v) => _run(() => _toggle(v)),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '1. Add the KeyRoam extension to Chrome, Edge, Brave, Vivaldi or Firefox.\n'
+              '2. Register KeyRoam with your browsers (once per computer):',
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              key: const Key('registerBrowsers'),
+              onPressed: _busy ? null : () => _run(_register),
+              icon: const Icon(Icons.extension_outlined),
+              label: const Text('Register with browsers'),
+            ),
+            if (_message != null) ...[const SizedBox(height: 12), SelectableText(_message!)],
+          ],
+        ),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+    );
+  }
+}

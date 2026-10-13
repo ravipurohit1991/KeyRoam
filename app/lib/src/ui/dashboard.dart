@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app/controller.dart';
+import '../app/platform_paths.dart';
 import '../engine/models.dart';
 import 'common.dart';
 import 'dialogs.dart';
@@ -26,6 +27,8 @@ class Dashboard extends StatelessWidget {
         message = await showChangePasswordDialog(context, controller);
       case 'deleted':
         await showDeletedDialog(context, controller);
+      case 'browser':
+        await showBrowserIntegrationDialog(context, controller);
       case 'signin':
         await showSignInDialog(
           context,
@@ -83,6 +86,7 @@ class Dashboard extends StatelessWidget {
               const PopupMenuItem(value: 'export', child: Text('Export encrypted backup…')),
               const PopupMenuItem(value: 'import', child: Text('Restore from backup…')),
               const PopupMenuItem(value: 'password', child: Text('Change master password…')),
+              if (PlatformPaths.isDesktop) const PopupMenuItem(value: 'browser', child: Text('Browser integration…')),
               const PopupMenuDivider(),
               if (state.signedIn)
                 const PopupMenuItem(value: 'signout', child: Text('Sign out of Google on this device'))

@@ -22,6 +22,17 @@ class PlatformPaths {
     return await _channel.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
   }
 
+  /// Desktop platforms, where the browser extension can be used.
+  static bool get isDesktop => Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
+  /// The native-messaging helper shipped next to the app executable
+  /// (`KeyRoam.app/Contents/MacOS` on macOS).
+  static String browserHostPath() {
+    final dir = File(Platform.resolvedExecutable).parent.path;
+    final name = Platform.isWindows ? 'keyroam-native-host.exe' : 'keyroam-native-host';
+    return '$dir${Platform.pathSeparator}$name';
+  }
+
   static Future<PlatformPaths> load() async {
     if (!Platform.isAndroid) return const PlatformPaths();
     final m = await _channel.invokeMapMethod<String, String>('paths');

@@ -725,6 +725,7 @@ name = "keyroam-ffi"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "keyroam-autofill",
  "keyroam-core",
  "keyroam-sync",
  "serde",

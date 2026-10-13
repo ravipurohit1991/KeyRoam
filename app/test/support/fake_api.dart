@@ -16,6 +16,9 @@ class FakeKeyRoamApi implements KeyRoamApi {
   bool offline = false;
   String syncStatus = 'never';
   int syncCount = 0;
+  bool browserIntegration = false;
+  int revision = 0;
+  String? installedHost;
   final calls = <String>[];
   final _entries = <String, EntryDetail>{};
   final _deleted = <String>{};
@@ -47,6 +50,8 @@ class FakeKeyRoamApi implements KeyRoamApi {
     entryCount: _visible.length,
     conflicts: _visible.where((e) => e.conflict).length,
     sync: SyncInfo(status: syncStatus),
+    browserIntegration: browserIntegration,
+    revision: revision,
   );
 
   Iterable<EntryDetail> get _visible => _entries.values.where((e) => !_deleted.contains(e.id));
@@ -209,6 +214,26 @@ class FakeKeyRoamApi implements KeyRoamApi {
   @override
   Future<ImportResult> importBackup(String path, String password) async =>
       ImportResult(before: _visible.length, after: _visible.length, changed: false);
+
+  /// Simulate the browser extension saving a login through the engine.
+  String saveFromBrowser(EntryData data) {
+    final id = seed(data);
+    revision++;
+    return id;
+  }
+
+  @override
+  Future<AppState> setBrowserIntegration(bool enabled) async {
+    _log('browserIntegration:$enabled');
+    browserIntegration = enabled;
+    return _state;
+  }
+
+  @override
+  Future<List<String>> installBrowserHost(String hostPath) async {
+    installedHost = hostPath;
+    return ['Google Chrome', 'Firefox'];
+  }
 
   @override
   Future<void> changePassword(String current, String newPassword) async {

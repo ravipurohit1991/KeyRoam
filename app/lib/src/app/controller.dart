@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../engine/api.dart';
 import '../engine/models.dart';
+import 'platform_paths.dart';
 
 enum Phase { loading, onboarding, locked, unlocked }
 
@@ -17,6 +18,7 @@ class AppTimings {
     this.syncDebounce = const Duration(seconds: 2),
     this.autoLock = const Duration(minutes: 5),
     this.clipboardClear = const Duration(seconds: 30),
+    this.browserWatch = const Duration(seconds: 3),
   });
 
   final Duration periodicSync;
@@ -24,6 +26,9 @@ class AppTimings {
   final Duration syncDebounce;
   final Duration autoLock;
   final Duration clipboardClear;
+
+  /// How often to look for logins saved by the browser extension.
+  final Duration browserWatch;
 }
 
 /// Application state and behaviour shared by all screens.
@@ -49,7 +54,11 @@ class AppController extends ChangeNotifier {
   Timer? _retry;
   Timer? _idle;
   Timer? _clipboard;
+  Timer? _watch;
   bool _disposed = false;
+
+  /// The engine revision the entry list reflects.
+  int _seenRevision = 0;
 
   Phase get phase {
     final s = state;
@@ -106,6 +115,8 @@ class AppController extends ChangeNotifier {
     await refreshEntries();
     _periodic?.cancel();
     _periodic = Timer.periodic(timings.periodicSync, (_) => this.syncNow(quiet: true));
+    _watch?.cancel();
+    _watch = Timer.periodic(timings.browserWatch, (_) => _checkBrowserChanges());
     userActivity();
     if (syncNow) {
       // Sync when the vault is opened.
@@ -114,7 +125,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> lock() async {
-    for (final t in [_periodic, _debounce, _retry, _idle]) {
+    for (final t in [_periodic, _debounce, _retry, _idle, _watch]) {
       t?.cancel();
     }
     await api.lock();
@@ -142,6 +153,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> refreshEntries() async {
     if (state?.unlocked != true) return;
+    final revision = state?.revision ?? _seenRevision;
     entries = await api.listEntries(query: query.isEmpty ? null : query);
     if (selectedId != null) {
       try {
@@ -152,6 +164,7 @@ class AppController extends ChangeNotifier {
       }
     }
     state = await api.state();
+    _seenRevision = revision;
     _notify();
   }
 
@@ -248,6 +261,31 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  // ----- browser integration -----
+
+  /// Refresh when the browser extension saved a login.
+  Future<void> _checkBrowserChanges() async {
+    final s = state;
+    if (s == null || !s.unlocked || !s.browserIntegration || syncing) return;
+    try {
+      final now = await api.state();
+      if (now.revision != _seenRevision) {
+        state = now;
+        await _modified();
+      }
+    } on KeyRoamException {
+      // The next tick tries again.
+    }
+  }
+
+  Future<void> setBrowserIntegration(bool enabled) async {
+    state = await api.setBrowserIntegration(enabled);
+    _seenRevision = state!.revision;
+    _notify();
+  }
+
+  Future<List<String>> installBrowserHost() => api.installBrowserHost(PlatformPaths.browserHostPath());
+
   // ----- clipboard -----
 
   /// Copy a secret and clear the clipboard after a delay if it is unchanged.
@@ -296,7 +334,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    for (final t in [_periodic, _debounce, _retry, _idle, _clipboard]) {
+    for (final t in [_periodic, _debounce, _retry, _idle, _clipboard, _watch]) {
       t?.cancel();
     }
     super.dispose();

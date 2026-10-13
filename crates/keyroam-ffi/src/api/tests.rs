@@ -312,3 +312,86 @@ fn civil_dates() {
     assert_eq!(civil_date(20_739), (2026, 10, 13));
     assert_eq!(civil_date(11_016), (2000, 2, 29));
 }
+
+#[test]
+fn browser_integration_serves_the_extension_only_while_unlocked() {
+    use keyroam_autofill::bridge::{BridgeClient, BRIDGE_FILE};
+
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    let dir = a._dir.path().to_path_buf();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    let id = a.ok(
+        "add_entry",
+        json!({ "data": { "title": "Example", "username": "alice", "password": "synthetic-1",
+                          "urls": ["https://example.com"] } }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Off by default.
+    assert_eq!(a.ok("state", json!({}))["browser_integration"], false);
+    assert!(!dir.join(BRIDGE_FILE).exists());
+    let st = a.ok("set_browser_integration", json!({ "enabled": true }));
+    assert_eq!(st["browser_integration"], true);
+
+    let call = |c: &mut BridgeClient, v: Value| -> Value {
+        serde_json::from_slice(&c.call(v.to_string().as_bytes()).unwrap()).unwrap()
+    };
+    let mut c = BridgeClient::connect(&dir).unwrap();
+    let page = json!({ "url": "https://login.example.com/", "top_url": "https://login.example.com/" });
+    let r = call(
+        &mut c,
+        json!({ "rid": 1, "type": "credential", "page": page, "id": id }),
+    );
+    assert_eq!(r["ok"]["password"], "synthetic-1");
+
+    // A save from the browser is persisted, queued for sync and announced.
+    let rev = a.ok("state", json!({}))["revision"].as_u64().unwrap();
+    let r = call(
+        &mut c,
+        json!({ "rid": 2, "type": "save", "page": page, "username": "bob", "password": "synthetic-2" }),
+    );
+    assert_eq!(r["ok"]["updated"], false);
+    let st = a.ok("state", json!({}));
+    assert_eq!(st["revision"].as_u64().unwrap(), rev + 1);
+    assert_eq!(st["entry_count"], 2);
+    assert_eq!(st["sync"]["pending_upload"], true);
+
+    // Locked: nothing is released.
+    a.ok("lock", json!({}));
+    let r = call(
+        &mut c,
+        json!({ "rid": 3, "type": "credential", "page": page, "id": id }),
+    );
+    assert_eq!(r["error"]["code"], "locked");
+    a.ok("unlock", json!({ "password": PW }));
+    assert_eq!(a.ok("list_entries", json!({})).as_array().unwrap().len(), 2);
+
+    // The setting survives a restart of the app.
+    let restarted = Engine::with_kdf_cost(KdfCost::MINIMUM);
+    restarted
+        .dispatch("open", json!({ "data_dir": dir.to_str().unwrap() }))
+        .unwrap();
+    assert_eq!(
+        restarted.dispatch("state", json!({})).unwrap()["browser_integration"],
+        true
+    );
+    drop(restarted);
+
+    a.ok("set_browser_integration", json!({ "enabled": true }));
+    a.ok("set_browser_integration", json!({ "enabled": false }));
+    assert!(!dir.join(BRIDGE_FILE).exists());
+    assert!(BridgeClient::connect(&dir).is_err());
+    assert_eq!(a.ok("state", json!({}))["browser_integration"], false);
+
+    assert_eq!(
+        a.err(
+            "install_browser_host",
+            json!({ "host_path": dir.join("missing-host").to_str().unwrap() })
+        ),
+        "not_found"
+    );
+}

@@ -51,6 +51,13 @@ abstract class KeyRoamApi {
   Future<int> exportBackup(String path, String password, {bool overwrite = false});
   Future<ImportResult> importBackup(String path, String password);
   Future<void> changePassword(String current, String newPassword);
+
+  // Browser integration (desktop).
+  Future<AppState> setBrowserIntegration(bool enabled);
+
+  /// Register the native-messaging helper at [hostPath] with the user's
+  /// browsers. Returns the browsers it was registered with.
+  Future<List<String>> installBrowserHost(String hostPath);
 }
 
 /// [KeyRoamApi] backed by the Rust engine. Every call runs on a short-lived
@@ -155,4 +162,11 @@ class NativeKeyRoamApi implements KeyRoamApi {
   @override
   Future<void> changePassword(String current, String newPassword) =>
       _call('change_password', {'current': current, 'new': newPassword});
+
+  @override
+  Future<AppState> setBrowserIntegration(bool enabled) => _state('set_browser_integration', {'enabled': enabled});
+
+  @override
+  Future<List<String>> installBrowserHost(String hostPath) async =>
+      (await _call('install_browser_host', {'host_path': hostPath}) as List).cast<String>();
 }

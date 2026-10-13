@@ -242,6 +242,38 @@ void main() {
     await finish(tester, c);
   });
 
+  testWidgets('browser integration: enable, register, and show logins saved by the extension', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Browser integration…'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('browserIntegration'))).value, isFalse);
+    await tester.tap(find.byKey(const Key('browserIntegration')));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('browserIntegration:true'));
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('browserIntegration'))).value, isTrue);
+
+    await tester.tap(find.byKey(const Key('registerBrowsers')));
+    await tester.pumpAndSettle();
+    expect(api.installedHost, contains('keyroam-native-host'));
+    expect(find.textContaining('Registered with Google Chrome, Firefox'), findsOneWidget);
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    // A login saved from the browser shows up without user action.
+    api.saveFromBrowser(const EntryData(title: 'example.com', username: 'from-browser@example.test'));
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+    expect(find.text('example.com'), findsWidgets);
+    await finish(tester, c);
+  });
+
   testWidgets('phone-sized screen: list and detail without overflow', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;

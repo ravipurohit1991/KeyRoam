@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 keyroam-core = { path = "../keyroam-core" }
 keyroam-sync = { path = "../keyroam-sync" }
+keyroam-autofill = { path = "../keyroam-autofill" }
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
