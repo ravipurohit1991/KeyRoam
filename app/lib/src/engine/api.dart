@@ -56,6 +56,10 @@ abstract class KeyRoamApi {
   Future<SyncResult> sync();
   Future<int> exportBackup(String path, String password, {bool overwrite = false});
   Future<ImportResult> importBackup(String path, String password);
+
+  /// Import logins from a CSV export (Chrome, Edge, Firefox, Safari,
+  /// Bitwarden, LastPass, 1Password, KeePass).
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false});
   Future<void> changePassword(String current, String newPassword);
 
   /// Replace the vault key with a fresh one (see docs/security.md).
@@ -174,6 +178,11 @@ class NativeKeyRoamApi implements KeyRoamApi {
     final r = await _call('import_backup', {'path': path, 'password': password}) as Map<String, dynamic>;
     return ImportResult(before: r['before'] as int, after: r['after'] as int, changed: r['changed'] as bool);
   }
+
+  @override
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false}) async => CsvImportResult.fromJson(
+    await _call('import_csv', {'path': path, 'delete_file': deleteFile}) as Map<String, dynamic>,
+  );
 
   @override
   Future<void> changePassword(String current, String newPassword) =>

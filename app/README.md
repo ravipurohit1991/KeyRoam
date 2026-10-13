@@ -80,6 +80,9 @@ flutter test
   browsers** writes the native-messaging manifests; under the macOS sandbox
   that fails and the app shows the terminal command to run instead. Logins
   saved from the browser appear within a few seconds.
+- **Import passwords from CSV…** reads exports of Chrome, Edge, Firefox,
+  Safari, Bitwarden, LastPass, 1Password and KeePass, skips logins already in
+  the vault, and can delete the plaintext CSV afterwards.
 - **Recently deleted** items can be restored or deleted permanently.
 - **Replace vault key…** creates a new vault key; other devices show a banner
   asking for the master password once.

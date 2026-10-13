@@ -43,6 +43,7 @@
 | `files` | Local vault, replica, backup and secrets file formats |
 | `storage` | Atomic local persistence and rotating backups |
 | `generator` | CSPRNG password generator |
+| `import` | CSV import from browsers and other password managers |
 
 ### `keyroam-sync`
 

@@ -211,5 +211,8 @@ silently). Marks hold only an id and a clock.
    OS locks the screen or sleeps, and clears copied passwords from the
    clipboard after 30 s. Dart strings that hold secrets cannot be wiped, so
    they remain in memory until garbage-collected.
-7. **Browser extension:** passwords copied from the extension's generator are
+7. **CSV import:** a browser's CSV export holds passwords in plaintext.
+   KeyRoam can overwrite and delete the file after importing, but SSDs,
+   backups and file-system snapshots may keep copies.
+8. **Browser extension:** passwords copied from the extension's generator are
    not cleared from the clipboard automatically.

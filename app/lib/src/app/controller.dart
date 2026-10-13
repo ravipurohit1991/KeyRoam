@@ -351,6 +351,12 @@ class AppController extends ChangeNotifier {
     _say('Master password changed. Other devices will use it after they sync.');
   }
 
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false}) async {
+    final r = await api.importCsv(path, deleteFile: deleteFile);
+    await _modified();
+    return r;
+  }
+
   Future<void> rotateVaultKey(String password) async {
     state = await api.rotateVaultKey(password);
     await _modified();

@@ -58,6 +58,9 @@ compiles and bundles it, and calls run on background isolates.
       KeyRoam process (such as the CLI) saved first, so no edit is lost.
 - [x] Lock when Windows locks or suspends, and when macOS locks the screen,
       sleeps or switches user. A KeyRoam app icon (`tools/make_icons.py`).
+- [x] Import logins from the CSV exports of Chrome/Edge/Brave, Firefox,
+      Safari, Bitwarden, LastPass, 1Password and KeePass (app and CLI);
+      duplicates are skipped and the plaintext file can be deleted afterwards.
 - [ ] Verified on a real macOS machine (so far it is only built in CI).
 
 ## ✅ 5. Desktop browser autofill

@@ -252,6 +252,33 @@ class OnboardingResult {
   }
 }
 
+/// Outcome of importing a CSV export of another password manager.
+class CsvImportResult {
+  const CsvImportResult({
+    required this.format,
+    required this.added,
+    required this.duplicates,
+    required this.skipped,
+    required this.deleted,
+  });
+
+  /// Detected source: Chrome, Firefox, Safari, Bitwarden, LastPass,
+  /// 1Password, KeePass or CSV.
+  final String format;
+  final int added;
+  final int duplicates;
+  final int skipped;
+  final bool deleted;
+
+  factory CsvImportResult.fromJson(Map<String, dynamic> j) => CsvImportResult(
+    format: j['format'] as String,
+    added: j['added'] as int,
+    duplicates: j['duplicates'] as int,
+    skipped: j['skipped'] as int,
+    deleted: j['deleted'] as bool,
+  );
+}
+
 class SignInStart {
   const SignInStart(this.url, this.browserOpened);
   final String url;

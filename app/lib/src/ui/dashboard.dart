@@ -23,6 +23,8 @@ class Dashboard extends StatelessWidget {
         message = await showExportDialog(context, controller);
       case 'import':
         message = await showImportDialog(context, controller);
+      case 'importCsv':
+        message = await showCsvImportDialog(context, controller);
       case 'password':
         message = await showChangePasswordDialog(context, controller);
       case 'rotate':
@@ -107,6 +109,7 @@ class Dashboard extends StatelessWidget {
               const PopupMenuItem(value: 'deleted', child: Text('Recently deleted')),
               const PopupMenuItem(value: 'export', child: Text('Export encrypted backup…')),
               const PopupMenuItem(value: 'import', child: Text('Restore from backup…')),
+              const PopupMenuItem(value: 'importCsv', child: Text('Import passwords from CSV…')),
               const PopupMenuItem(value: 'password', child: Text('Change master password…')),
               const PopupMenuItem(value: 'rotate', child: Text('Replace vault key…')),
               if (PlatformPaths.isDesktop) const PopupMenuItem(value: 'browser', child: Text('Browser integration…')),

@@ -81,7 +81,7 @@ CLI, add the repository secrets `KEYROAM_GOOGLE_CLIENT_ID` and
 You need a stable Rust toolchain (<https://rustup.rs>).
 
 ```sh
-cargo test --workspace      # 120 tests: crypto, merge properties, sync, OAuth, autofill, FFI, CLI, host
+cargo test --workspace      # 128 tests: crypto, merge properties, sync, OAuth, autofill, import, FFI, CLI, host
 cargo build --release -p keyroam-cli
 ```
 
@@ -101,6 +101,23 @@ flutter test                # real-engine FFI tests + UI flow tests
 ```
 
 See [app/README.md](app/README.md) for the full details.
+
+## Moving your passwords in
+
+Export your passwords as CSV from your browser or password manager, then use
+**Menu → Import passwords from CSV…** in the app (or
+`keyroam import-csv <file> --delete`). KeyRoam reads the exports of Chrome,
+Edge, Brave and other Chromium browsers, Firefox, Safari, Bitwarden, LastPass,
+1Password, KeePass and KeePassXC. Logins already in KeyRoam are skipped and
+nothing is overwritten. The CSV file is unencrypted: let KeyRoam delete it
+afterwards, and empty the trash.
+
+| Source | How to export |
+|---|---|
+| Chrome, Edge, Brave, Vivaldi | Settings → Passwords / Password Manager → Export passwords |
+| Firefox | `about:logins` → ••• → Export Passwords |
+| Safari (macOS) | File → Export → Passwords |
+| Bitwarden, LastPass, 1Password, KeePass(XC) | Their "Export → CSV" option |
 
 ## Browser extension
 
@@ -153,6 +170,7 @@ site you are on, while the app is unlocked. See
    keyroam status     # sync status, no password needed
    keyroam export backup.krbackup   # independent encrypted backup
    keyroam import backup.krbackup   # merge a backup back in (never deletes data)
+   keyroam import-csv passwords.csv --delete   # import a browser's / password manager's CSV export
    keyroam passwd     # change master password on all devices
    keyroam rotate-key # replace the vault key (other devices ask for the password once)
    keyroam generate --length 24

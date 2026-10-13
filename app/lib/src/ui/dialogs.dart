@@ -651,3 +651,106 @@ class _BrowserIntegrationDialogState extends State<_BrowserIntegrationDialog> {
     );
   }
 }
+
+/// Import logins from another browser's or password manager's CSV export.
+Future<String?> showCsvImportDialog(BuildContext context, AppController c) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _CsvImportDialog(controller: c),
+  );
+}
+
+class _CsvImportDialog extends StatefulWidget {
+  const _CsvImportDialog({required this.controller});
+  final AppController controller;
+
+  @override
+  State<_CsvImportDialog> createState() => _CsvImportDialogState();
+}
+
+class _CsvImportDialogState extends State<_CsvImportDialog> {
+  final _path = TextEditingController();
+  bool _delete = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _path.dispose();
+    super.dispose();
+  }
+
+  Future<void> _import() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final r = await widget.controller.importCsv(_path.text.trim(), deleteFile: _delete);
+      if (!mounted) return;
+      final parts = [
+        'Imported ${r.added} login${r.added == 1 ? '' : 's'} from ${r.format}',
+        if (r.duplicates > 0) '${r.duplicates} already in KeyRoam',
+        if (r.skipped > 0) '${r.skipped} without a username or password',
+      ];
+      final tail = r.deleted ? ' The CSV file was deleted.' : ' Delete the CSV file: it is not encrypted.';
+      Navigator.pop(context, '${parts.join(', ')}.$tail');
+    } on KeyRoamException catch (e) {
+      setState(() {
+        _busy = false;
+        _error = e.message;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Import passwords from CSV'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Export your passwords as a CSV file, then enter its path:\n'
+              '• Chrome, Edge, Brave: Settings → Passwords (Password Manager) → Export passwords\n'
+              '• Firefox: about:logins → ••• menu → Export Passwords\n'
+              '• Safari: File → Export → Passwords\n'
+              '• Bitwarden, LastPass, 1Password, KeePass: their CSV export\n\n'
+              'Logins already in KeyRoam are skipped; nothing is overwritten.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('csvPath'),
+              controller: _path,
+              decoration: const InputDecoration(
+                labelText: 'CSV file',
+                hintText: 'C:\\Users\\me\\Downloads\\passwords.csv',
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            CheckboxListTile(
+              key: const Key('csvDelete'),
+              contentPadding: EdgeInsets.zero,
+              value: _delete,
+              onChanged: (v) => setState(() => _delete = v ?? false),
+              title: const Text('Delete the CSV file after importing'),
+              subtitle: const Text('It holds your passwords unencrypted.'),
+            ),
+            if (_error != null) Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: _busy ? null : () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          key: const Key('csvImport'),
+          onPressed: _busy || _path.text.trim().isEmpty ? null : _import,
+          child: const Text('Import'),
+        ),
+      ],
+    );
+  }
+}

@@ -281,6 +281,34 @@ fn vault_key_rotation_between_devices() {
 }
 
 #[test]
+fn csv_import_from_a_browser_export() {
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    let csv = a._dir.path().join("Chrome Passwords.csv");
+    std::fs::write(
+        &csv,
+        "name,url,username,password,note\nexample.com,https://example.com/,alice,synthetic-1,\nexample.com,https://example.com/,alice,synthetic-1,\n,,,,\n",
+    )
+    .unwrap();
+    let r = a.ok(
+        "import_csv",
+        json!({ "path": csv.to_str().unwrap(), "delete_file": true }),
+    );
+    assert_eq!(r["format"], "Chrome");
+    assert_eq!(
+        (r["added"].as_u64(), r["duplicates"].as_u64(), r["skipped"].as_u64()),
+        (Some(1), Some(1), Some(1))
+    );
+    assert_eq!(r["deleted"], true);
+    assert!(!csv.exists());
+    assert_eq!(a.ok("state", json!({}))["entry_count"], 1);
+    assert_eq!(a.ok("state", json!({}))["sync"]["pending_upload"], true);
+    assert_eq!(a.err("import_csv", json!({ "path": csv.to_str().unwrap() })), "io");
+}
+
+#[test]
 fn backup_export_import() {
     let remote = Shared(Arc::new(MemoryRemote::default()));
     let a = Device::new();

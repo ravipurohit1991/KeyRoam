@@ -148,6 +148,14 @@ enum Cmd {
     Import { path: PathBuf },
     /// Change the master password on all devices.
     Passwd,
+    /// Import logins from a CSV export of Chrome, Edge, Firefox, Safari,
+    /// Bitwarden, LastPass, 1Password or KeePass.
+    ImportCsv {
+        file: PathBuf,
+        /// Overwrite and delete the plaintext CSV file after importing.
+        #[arg(long)]
+        delete: bool,
+    },
     /// Replace the vault key with a fresh one (other devices ask for the
     /// master password once).
     RotateKey,
@@ -523,6 +531,26 @@ fn run(cli: Cli) -> CliResult {
                 r => r?,
             };
             report_sync(&r, false);
+        }
+        Cmd::ImportCsv { file, delete } => {
+            let bytes = Zeroizing::new(std::fs::read(&file)?);
+            let parsed = keyroam_core::import::parse_csv(&bytes)?;
+            let (mut vault, _pw) = ctx.unlock()?;
+            let s = ctx.commit(&mut vault, true, |v| v.import_logins(&parsed.logins))?;
+            println!(
+                "Imported {} login(s) from {} ({} already in KeyRoam, {} without a username or password).",
+                s.added, parsed.format, s.duplicates, parsed.skipped
+            );
+            if delete {
+                keyroam_core::import::remove_plaintext_file(&file)?;
+                println!("Deleted {}.", file.display());
+            } else {
+                println!(
+                    "{} holds your passwords unencrypted: delete it (or rerun with --delete).",
+                    file.display()
+                );
+            }
+            ctx.auto_sync(&mut vault);
         }
         Cmd::RotateKey => {
             let (mut vault, pw) = ctx.unlock()?;

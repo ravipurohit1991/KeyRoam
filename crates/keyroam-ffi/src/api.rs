@@ -367,6 +367,7 @@ impl Engine {
             "sync" => self.sync_now(),
             "export_backup" => self.export(params(p)?),
             "import_backup" => self.import(params(p)?),
+            "import_csv" => self.import_csv(params(p)?),
             "change_password" => self.change_password(params(p)?),
             "rotate_vault_key" => self.rotate_key(params(p)?),
             "adopt_rotated_key" => self.adopt_key(params(p)?),
@@ -830,7 +831,32 @@ impl Engine {
     }
 }
 
+#[derive(Deserialize)]
+struct ImportCsvParams {
+    path: String,
+    #[serde(default)]
+    delete_file: bool,
+}
+
 impl Engine {
+    /// Import logins from a browser's or password manager's CSV export.
+    fn import_csv(&self, p: ImportCsvParams) -> ApiResult {
+        let path = PathBuf::from(&p.path);
+        let bytes = Zeroizing::new(std::fs::read(&path).map_err(keyroam_core::Error::from)?);
+        let parsed = keyroam_core::import::parse_csv(&bytes)?;
+        let mut s = lock(&self.session);
+        let (vault, store) = Self::unlocked(&mut s)?;
+        let summary = commit_local_change(vault, store, true, |v| v.import_logins(&parsed.logins))?;
+        let deleted = p.delete_file && keyroam_core::import::remove_plaintext_file(&path).is_ok();
+        Ok(json!({
+            "format": parsed.format,
+            "added": summary.added,
+            "duplicates": summary.duplicates,
+            "skipped": parsed.skipped,
+            "deleted": deleted,
+        }))
+    }
+
     /// Replace the vault key; the new header and replica upload on the next sync.
     fn rotate_key(&self, p: PasswordParams) -> ApiResult {
         let password = Zeroizing::new(p.password);

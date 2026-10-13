@@ -240,6 +240,14 @@ class FakeKeyRoamApi implements KeyRoamApi {
   bool remoteKeyRotated = false;
 
   @override
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false}) async {
+    _log('importCsv:$path:$deleteFile');
+    if (!path.endsWith('.csv')) throw const KeyRoamException('invalid_input', 'no password column found');
+    seed(const EntryData(title: 'imported.example', username: 'csv-user'));
+    return CsvImportResult(format: 'Chrome', added: 1, duplicates: 2, skipped: 0, deleted: deleteFile);
+  }
+
+  @override
   Future<AppState> rotateVaultKey(String password) async {
     if (password != this.password) throw const KeyRoamException('wrong_password', 'wrong');
     _log('rotateVaultKey');

@@ -220,6 +220,34 @@ void main() {
     await finish(tester, c);
   });
 
+  testWidgets('import passwords from a browser CSV export', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Import passwords from CSV…'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<FilledButton>(find.byKey(const Key('csvImport'))).onPressed, isNull);
+    await tester.enterText(find.byKey(const Key('csvPath')), 'notes.txt');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('csvImport')));
+    await tester.pumpAndSettle();
+    expect(find.text('no password column found'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('csvPath')), '/home/me/Chrome Passwords.csv');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('csvImport')));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('importCsv:/home/me/Chrome Passwords.csv:true'));
+    expect(find.textContaining('Imported 1 login from Chrome, 2 already in KeyRoam'), findsOneWidget);
+    expect(find.text('imported.example'), findsWidgets);
+    await finish(tester, c);
+  });
+
   testWidgets('recently deleted: restore or delete permanently', (tester) async {
     final api = FakeKeyRoamApi(hasVault: true);
     final keep = api.seed(const EntryData(title: 'Keep me'));
