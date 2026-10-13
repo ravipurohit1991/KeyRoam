@@ -72,9 +72,10 @@ void main(List<String> args) async {
 Map<String, String> _platformEnv(CodeConfig code, String target) {
   switch (code.targetOS) {
     case OS.macOS:
-      return {'MACOSX_DEPLOYMENT_TARGET': '${code.macOS.targetVersion}'};
+      return {'MACOSX_DEPLOYMENT_TARGET': '${code.macOS.targetVersion}', ..._appleSdk('macosx')};
     case OS.iOS:
-      return {'IPHONEOS_DEPLOYMENT_TARGET': '${code.iOS.targetVersion}'};
+      final sdk = code.iOS.targetSdk == IOSSdk.iPhoneSimulator ? 'iphonesimulator' : 'iphoneos';
+      return {'IPHONEOS_DEPLOYMENT_TARGET': '${code.iOS.targetVersion}', ..._appleSdk(sdk)};
     case OS.android:
       // Link with the NDK clang provided by Flutter; `ring` (TLS) also needs
       // it to compile its C/assembly parts.
@@ -101,6 +102,17 @@ Map<String, String> _platformEnv(CodeConfig code, String target) {
     default:
       return {};
   }
+}
+
+/// The hook runner does not pass Xcode's environment through, so C code
+/// (compiled by `ring`) would not find the SDK headers. Locate the SDK
+/// explicitly.
+Map<String, String> _appleSdk(String sdk) {
+  final r = Process.runSync('xcrun', ['--sdk', sdk, '--show-sdk-path']);
+  if (r.exitCode != 0) {
+    throw StateError('xcrun could not find the $sdk SDK: ${r.stderr}');
+  }
+  return {'SDKROOT': (r.stdout as String).trim()};
 }
 
 String _findCargo() {
