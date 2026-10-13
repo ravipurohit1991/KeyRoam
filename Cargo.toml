@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/keyroam-core", "crates/keyroam-sync", "crates/keyroam-cli", "crates/keyroam-ffi"]
+members = [
+    "crates/keyroam-core",
+    "crates/keyroam-sync",
+    "crates/keyroam-autofill",
+    "crates/keyroam-native-host",
+    "crates/keyroam-cli",
+    "crates/keyroam-ffi",
+]
 
 [workspace.package]
 version = "0.1.0"
