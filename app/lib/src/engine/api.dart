@@ -45,6 +45,12 @@ abstract class KeyRoamApi {
   Future<void> updateEntry(String id, EntryData data);
   Future<void> deleteEntry(String id);
   Future<void> restoreEntry(String id);
+
+  /// Permanently erase a deleted entry on every device.
+  Future<void> purgeEntry(String id);
+
+  /// Permanently erase all deleted entries. Returns how many.
+  Future<int> purgeDeleted();
   Future<void> resolveConflict(String id, int choice);
 
   Future<SyncResult> sync();
@@ -135,6 +141,10 @@ class NativeKeyRoamApi implements KeyRoamApi {
   Future<void> deleteEntry(String id) => _call('delete_entry', {'id': id});
   @override
   Future<void> restoreEntry(String id) => _call('restore_entry', {'id': id});
+  @override
+  Future<void> purgeEntry(String id) => _call('purge_entry', {'id': id});
+  @override
+  Future<int> purgeDeleted() async => (await _call('purge_deleted') as Map<String, dynamic>)['purged'] as int;
   @override
   Future<void> resolveConflict(String id, int choice) => _call('resolve_conflict', {'id': id, 'choice': choice});
 

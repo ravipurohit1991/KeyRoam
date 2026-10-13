@@ -189,6 +189,20 @@ class FakeKeyRoamApi implements KeyRoamApi {
   Future<void> restoreEntry(String id) async => _deleted.remove(id);
 
   @override
+  Future<void> purgeEntry(String id) async {
+    _log('purge:$id');
+    if (!_deleted.remove(id)) throw const KeyRoamException('invalid_input', 'only deleted entries');
+    _entries.remove(id);
+  }
+
+  @override
+  Future<int> purgeDeleted() async {
+    final n = _deleted.length;
+    _deleted.toList().forEach(purgeEntry);
+    return n;
+  }
+
+  @override
   Future<void> resolveConflict(String id, int choice) async {
     _log('resolveConflict:$choice');
     await updateEntry(id, _entries[id]!.versions[choice].data!);

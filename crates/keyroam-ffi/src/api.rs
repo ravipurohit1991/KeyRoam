@@ -353,6 +353,13 @@ impl Engine {
             "update_entry" => self.update(params(p)?),
             "delete_entry" => self.modify(params(p)?, |v, id| v.delete_entry(id)),
             "restore_entry" => self.modify(params(p)?, |v, id| v.restore_entry(id)),
+            "purge_entry" => self.modify(params(p)?, |v, id| v.purge_entry(id)),
+            "purge_deleted" => {
+                let mut s = lock(&self.session);
+                let (vault, store) = Self::unlocked(&mut s)?;
+                let purged = commit_local_change(vault, store, false, |v| v.purge_deleted())?;
+                Ok(json!({ "purged": purged }))
+            }
             "resolve_conflict" => self.resolve(params(p)?),
             "sync" => self.sync_now(),
             "export_backup" => self.export(params(p)?),

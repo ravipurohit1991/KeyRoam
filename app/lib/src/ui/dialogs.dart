@@ -445,20 +445,72 @@ Future<void> showDeletedDialog(BuildContext context, AppController c) async {
                     ListTile(
                       title: Text(e.title),
                       subtitle: Text('Deleted ${timeAgo(e.modifiedAt)}'),
-                      trailing: TextButton(
-                        onPressed: () async {
-                          await c.restoreEntry(e.id);
-                          if (context.mounted) Navigator.pop(context);
-                        },
-                        child: const Text('Restore'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton(
+                            onPressed: () async {
+                              await c.restoreEntry(e.id);
+                              if (context.mounted) Navigator.pop(context);
+                            },
+                            child: const Text('Restore'),
+                          ),
+                          IconButton(
+                            tooltip: 'Delete permanently',
+                            icon: const Icon(Icons.delete_forever_outlined),
+                            onPressed: () async {
+                              if (!await _confirmPurge(context, e.title)) return;
+                              await c.purgeEntry(e.id);
+                              if (context.mounted) Navigator.pop(context);
+                            },
+                          ),
+                        ],
                       ),
                     ),
                 ],
               ),
       ),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+      actions: [
+        if (deleted.isNotEmpty)
+          TextButton(
+            key: const Key('purgeAll'),
+            onPressed: () async {
+              if (!await _confirmPurge(context, null)) return;
+              await c.purgeDeleted();
+              if (context.mounted) Navigator.pop(context);
+            },
+            child: const Text('Delete all permanently'),
+          ),
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+      ],
     ),
   );
+}
+
+Future<bool> _confirmPurge(BuildContext context, String? title) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title == null ? 'Delete all permanently?' : 'Delete “$title” permanently?'),
+      content: const SizedBox(
+        width: 420,
+        child: Text(
+          'The login and its password history are erased from this device and, after syncing, '
+          'from all your devices. This cannot be undone. Encrypted backups you exported earlier '
+          'still contain it.',
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        FilledButton(
+          key: const Key('confirmPurge'),
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Delete permanently'),
+        ),
+      ],
+    ),
+  );
+  return confirmed ?? false;
 }
 
 Future<void> showSignInDialog(BuildContext context, AppController c, Widget signInStep) {

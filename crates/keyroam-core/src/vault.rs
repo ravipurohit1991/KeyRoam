@@ -189,6 +189,7 @@ impl Vault {
         let device = self.device_id;
         let rec = self.state.entries.get_mut(&id).ok_or(Error::EntryNotFound)?;
         rec.supersede(device, now_millis(), Some(data));
+        self.state.enforce_purge(id);
         Ok(())
     }
 
@@ -199,6 +200,7 @@ impl Vault {
             return Ok(());
         }
         rec.supersede(device, now_millis(), None);
+        self.state.enforce_purge(id);
         Ok(())
     }
 
@@ -214,6 +216,28 @@ impl Vault {
         self.update_entry(id, data)
     }
 
+    /// Permanently erase a deleted entry, with its password history, on this
+    /// device and, after syncing, on every device. Only entries in "recently
+    /// deleted" can be purged.
+    pub fn purge_entry(&mut self, id: EntryId) -> Result<()> {
+        let rec = self.state.entries.get(&id).ok_or(Error::EntryNotFound)?;
+        if !rec.is_deleted() || rec.has_conflict() {
+            return Err(Error::InvalidInput("only deleted entries can be purged".into()));
+        }
+        let clock = rec.joined_clock();
+        self.state.add_purge(id, clock);
+        Ok(())
+    }
+
+    /// Purge every deleted entry. Returns how many were purged.
+    pub fn purge_deleted(&mut self) -> Result<usize> {
+        let ids: Vec<EntryId> = self.deleted_entries().map(|r| r.id).collect();
+        for id in &ids {
+            self.purge_entry(*id)?;
+        }
+        Ok(ids.len())
+    }
+
     /// Resolve a conflict by keeping sibling `choice` (index into `versions`).
     /// The other versions remain available in the entry history.
     pub fn resolve_conflict(&mut self, id: EntryId, choice: usize) -> Result<()> {
@@ -227,6 +251,7 @@ impl Vault {
         let device = self.device_id;
         let rec = self.state.entries.get_mut(&id).expect("checked above");
         rec.supersede(device, now_millis(), chosen);
+        self.state.enforce_purge(id);
         Ok(())
     }
 
@@ -455,6 +480,41 @@ mod tests {
         assert_eq!(v.search("nomatch").len(), 0);
         assert_eq!(v.resolve_id(&id.to_string()[..8]).unwrap(), id);
         assert!(v.update_entry(Uuid::new_v4(), entry("x", "y")).is_err());
+    }
+
+    #[test]
+    fn purge_deleted_entries_across_devices() {
+        let mut a = Vault::create(PW, KdfCost::MINIMUM).unwrap();
+        let keep = a.add_entry(entry("Keep", "synthetic-keep")).unwrap();
+        let gone = a.add_entry(entry("Gone", "synthetic-gone-1")).unwrap();
+        a.update_entry(gone, entry("Gone", "synthetic-gone-2")).unwrap();
+        let mut b = Vault::join(a.header().clone(), PW).unwrap();
+        b.merge_state(&b.open_replica(&a.seal_replica().unwrap()).unwrap())
+            .unwrap();
+
+        assert!(
+            matches!(a.purge_entry(gone), Err(Error::InvalidInput(_))),
+            "live entries cannot be purged"
+        );
+        a.delete_entry(gone).unwrap();
+        a.purge_entry(gone).unwrap();
+        assert!(a.get(gone).is_none());
+        assert!(a.restore_entry(gone).is_err());
+        let replica = a.seal_replica().unwrap();
+        assert!(!String::from_utf8_lossy(&replica.to_bytes().unwrap()).contains("synthetic-gone"));
+
+        // b still had the entry with its history; the purge removes it there,
+        // and b's stale replica does not bring it back to a.
+        let stale_b = b.seal_replica().unwrap();
+        b.merge_state(&b.open_replica(&replica).unwrap()).unwrap();
+        assert!(b.get(gone).is_none());
+        a.merge_state(&a.open_replica(&stale_b).unwrap()).unwrap();
+        assert!(a.get(gone).is_none());
+        assert!(a.get(keep).is_some());
+
+        b.delete_entry(keep).unwrap();
+        assert_eq!(b.purge_deleted().unwrap(), 1);
+        assert_eq!(b.entries().count() + b.deleted_entries().count(), 0);
     }
 
     #[test]

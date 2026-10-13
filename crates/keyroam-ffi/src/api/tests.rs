@@ -191,6 +191,22 @@ fn entries_conflicts_and_sync() {
         0
     );
     assert_eq!(a.err("get_entry", json!({ "id": "nope" })), "invalid_input");
+
+    // Permanent purge reaches the other device.
+    assert_eq!(a.err("purge_entry", json!({ "id": id })), "invalid_input");
+    a.ok("delete_entry", json!({ "id": id }));
+    assert_eq!(a.ok("purge_deleted", json!({}))["purged"], 1);
+    assert_eq!(a.err("get_entry", json!({ "id": id })), "not_found");
+    a.ok("sync", json!({}));
+    b.ok("sync", json!({}));
+    assert_eq!(b.err("get_entry", json!({ "id": id })), "not_found");
+    assert_eq!(
+        b.ok("list_entries", json!({ "deleted": true }))
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 }
 
 #[test]

@@ -101,6 +101,13 @@ fn entry_lifecycle() {
     let raw = std::fs::read_to_string(d.join("vault.krv")).unwrap();
     assert!(!raw.contains("synthetic-entry-pw") && !raw.contains("alice@example.test"));
 
+    // Permanent purge: deleted entries only, and nothing is left behind.
+    assert!(!keyroam(d, &["purge", &id], &format!("{PW}\n")).status.success());
+    ok(keyroam(d, &["rm", &id], &format!("{PW}\n")));
+    assert!(ok(keyroam(d, &["purge", "--all"], &format!("{PW}\n"))).contains("erased 1 deleted entry"));
+    assert!(!ok(keyroam(d, &["list", "--deleted"], &format!("{PW}\n"))).contains(&id));
+    assert!(!keyroam(d, &["restore", &id], &format!("{PW}\n")).status.success());
+
     let status = ok(keyroam(d, &["status"], ""));
     assert!(status.contains("waiting to upload"), "{status}");
 }

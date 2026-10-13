@@ -226,6 +226,18 @@ class AppController extends ChangeNotifier {
 
   Future<List<EntrySummary>> deletedEntries() => api.listEntries(deleted: true);
 
+  Future<void> purgeEntry(String id) async {
+    await api.purgeEntry(id);
+    await _modified();
+    _say('Deleted permanently');
+  }
+
+  Future<void> purgeDeleted() async {
+    final n = await api.purgeDeleted();
+    await _modified();
+    _say(n == 1 ? '1 item deleted permanently' : '$n items deleted permanently');
+  }
+
   // ----- sync -----
 
   /// "Sync Now". With [quiet], success is not announced.

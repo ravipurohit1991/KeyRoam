@@ -220,6 +220,47 @@ void main() {
     await finish(tester, c);
   });
 
+  testWidgets('recently deleted: restore or delete permanently', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final keep = api.seed(const EntryData(title: 'Keep me'));
+    final gone = api.seed(const EntryData(title: 'Erase me'));
+    await api.deleteEntry(keep);
+    await api.deleteEntry(gone);
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    Future<void> openDeleted() async {
+      await tester.tap(find.byKey(const Key('menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Recently deleted'));
+      await tester.pumpAndSettle();
+    }
+
+    await openDeleted();
+    final eraseRow = find.ancestor(of: find.text('Erase me'), matching: find.byType(ListTile));
+    await tester.tap(find.descendant(of: eraseRow, matching: find.byTooltip('Delete permanently')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete “Erase me” permanently?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(api.calls.where((c) => c.startsWith('purge')), isEmpty);
+    await tester.tap(find.descendant(of: eraseRow, matching: find.byTooltip('Delete permanently')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('confirmPurge')));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('purge:$gone'));
+    expect(find.text('Deleted permanently'), findsOneWidget);
+
+    await openDeleted();
+    expect(find.text('Erase me'), findsNothing);
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep me'), findsWidgets);
+    await finish(tester, c);
+  });
+
   testWidgets('locks when the operating system locks or sleeps', (tester) async {
     final api = FakeKeyRoamApi(hasVault: true);
     final c = await start(tester, api);

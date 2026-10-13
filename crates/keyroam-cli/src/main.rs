@@ -111,6 +111,15 @@ enum Cmd {
     Rm { id: String },
     /// Restore a deleted entry.
     Restore { id: String },
+    /// Permanently erase a deleted entry and its history on every device.
+    Purge {
+        /// Entry id (prefix) of a deleted entry.
+        #[arg(required_unless_present = "all")]
+        id: Option<String>,
+        /// Purge every deleted entry.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+    },
     /// List entries edited concurrently on different devices.
     Conflicts,
     /// Resolve a conflict by keeping version CHOICE (see `conflicts`).
@@ -618,6 +627,21 @@ fn run(cli: Cli) -> CliResult {
             let id = vault.resolve_id(&id)?;
             ctx.commit(&mut vault, false, |v| v.delete_entry(id))?;
             println!("Deleted {} (restore with `keyroam restore {}`)", short(&id), short(&id));
+            ctx.auto_sync(&mut vault);
+        }
+        Cmd::Purge { id, all } => {
+            let (mut vault, _pw) = ctx.unlock()?;
+            let purged = match id {
+                Some(id) if !all => {
+                    let id = vault.resolve_id(&id)?;
+                    ctx.commit(&mut vault, false, |v| v.purge_entry(id).map(|_| 1))?
+                }
+                _ => ctx.commit(&mut vault, false, |v| v.purge_deleted())?,
+            };
+            println!(
+                "Permanently erased {purged} deleted entr{}.",
+                if purged == 1 { "y" } else { "ies" }
+            );
             ctx.auto_sync(&mut vault);
         }
         Cmd::Restore { id } => {
