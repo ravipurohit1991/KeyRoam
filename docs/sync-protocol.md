@@ -27,6 +27,8 @@ All replica payloads are encrypted with the vault key and bound to
 - Each `Version` has a **version vector** (`device id → counter`), a wall-clock
   timestamp (used for display only), the author device, a deletion flag and the
   entry data.
+- `purged` (omitted when empty) maps purged entry ids to a **purge mark**: the
+  entry's clock when it was deleted permanently.
 
 ### Local edit
 
@@ -49,6 +51,11 @@ overrides newer data.
   others in history.
 - Concurrent "edit vs delete" is a conflict too. A delete never silently wins
   over an unseen edit.
+- Purge marks are joined like clocks. After merging, every version at or
+  before an entry's mark is erased together with the entry's history; an
+  entry with no versions left is removed. A concurrent edit not covered by
+  the mark survives. This keeps the merge a CRDT, so a stale replica never
+  revives purged data.
 
 The core crate's property tests check these invariants over random
 multi-device operation sequences: commutativity, associativity, idempotence,
@@ -62,6 +69,13 @@ convergence, and "no version is lost unless a later edit superseded it".
      the vault.
    - One exists: download it. It must belong to the same vault and verify under
      the vault key.
+     - A newer `key_epoch` (the vault key was replaced on another device), or a
+       header of the same rotated epoch that does not verify: stop with
+       `key_rotated`. The app asks for the master password, adopts the header
+       (the password must unwrap its key, and its key list must contain a key
+       this device holds), re-encrypts the local files and syncs again.
+     - An older `key_epoch`: verified with the earlier key and treated as
+       stale; the local header is uploaded.
      - Newer revision (or the same revision with different content): adopt it.
        The master password was changed elsewhere.
      - Older revision: upload the local header.
@@ -69,7 +83,7 @@ convergence, and "no version is lost unless a later edit superseded it".
      oldest is canonical.
 3. **Pull replicas.** For every `keyroam.replica.*` file whose Drive `version`
    differs from the last merged version, download it, authenticate and decrypt
-   it, then merge.
+   it with the key of its `key_epoch` (current or earlier), then merge.
    - Replicas that fail authentication, belong to another vault, or cannot be
      parsed are skipped with a warning. They are not marked as seen, so the next
      sync retries them.

@@ -70,7 +70,19 @@ flutter test
   5 min while unlocked, every 30 s while offline (so it catches connectivity
   returning), and on **Sync Now**. The status chip in the toolbar shows the
   current state.
-- **Auto-lock** after 5 min of inactivity.
+- **Auto-lock** after 5 min of inactivity, and when Windows locks or suspends,
+  or macOS locks the screen, sleeps or switches user (the runners report these
+  on the `keyroam/system` channel).
+- **Browser integration** (Menu → Browser integration…) is off by default.
+  When on, the engine serves the browser extension through
+  `keyroam-native-host`, which the release builds place next to
+  `keyroam.exe` and in `KeyRoam.app/Contents/MacOS`. **Register with
+  browsers** writes the native-messaging manifests; under the macOS sandbox
+  that fails and the app shows the terminal command to run instead. Logins
+  saved from the browser appear within a few seconds.
+- **Recently deleted** items can be restored or deleted permanently.
+- **Replace vault key…** creates a new vault key; other devices show a banner
+  asking for the master password once.
 - **Copied passwords** are cleared from the clipboard after 30 s, provided the
   clipboard still holds them.
 

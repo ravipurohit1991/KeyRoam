@@ -54,20 +54,33 @@ compiles and bundles it, and calls run on background isolates.
 - [ ] Native file picker for backups (`file_selector`). Flutter plugins need
       Windows Developer Mode on the build machine, so this is deferred.
       Under the macOS sandbox, exports currently go to the app container.
-- [ ] Advisory file lock on the data directory.
-- [ ] Lock when the OS locks or sleeps. A KeyRoam app icon.
+- [x] Advisory lock on the data directory. Every write merges what another
+      KeyRoam process (such as the CLI) saved first, so no edit is lost.
+- [x] Lock when Windows locks or suspends, and when macOS locks the screen,
+      sleeps or switches user. A KeyRoam app icon (`tools/make_icons.py`).
 - [ ] Verified on a real macOS machine (so far it is only built in CI).
 
-## ⏳ 5. Desktop browser autofill
+## ✅ 5. Desktop browser autofill
 
-- [ ] Manifest V3 extension for Chromium-based browsers and Firefox.
-- [ ] Native-messaging host bundled with the desktop app. The extension can
-      query credentials only for the active tab's origin, and only while the
-      app is unlocked.
-- [ ] Public-suffix-aware origin matching. Never fill on HTTP pages, or in
-      cross-origin iframes, without explicit consent.
-- [ ] Save or update prompts after form submission.
-- [ ] Tests for origin matching and the messaging protocol.
+`browser-extension/`, `crates/keyroam-autofill` and `crates/keyroam-native-host`.
+
+- [x] Manifest V3 extension for Chrome, Edge, Brave, Vivaldi (service worker)
+      and Firefox 115+ (background scripts), built by `browser-extension/build.mjs`.
+- [x] Native-messaging host bundled with the desktop app. It relays to the
+      running app over a loopback bridge authenticated by a mutual HMAC
+      challenge-response. The app answers only while unlocked, and only with
+      logins of the requesting page's site. Browser integration is an opt-in
+      setting with a "Register with browsers" button
+      (`keyroam-native-host install` does the same from a terminal).
+- [x] Public-suffix-aware origin matching (private section included). https
+      logins are never offered on http pages. Filling an http page or a form
+      in a frame of another site needs explicit consent; the engine re-checks.
+- [x] Save or update prompts after form submission, in an extension-page
+      iframe the website cannot script. Nothing is filled without a user action.
+- [x] Tests: origin matching, protocol and bridge (Rust); the host binary end to
+      end; form detection, the native client and the background flows (Node);
+      and a real-Chromium test that fills, submits and saves through the real
+      host and bridge.
 
 ## 6. Android
 
@@ -93,8 +106,9 @@ compiles and bundles it, and calls run on background isolates.
 
 - [ ] Cross-device test matrix: Windows, macOS, Android and iOS editing the
       same vault, including offline periods and password changes.
-- [ ] Vault-key rotation, permanent purge, and an inter-process lock (see
-      docs/security.md).
+- [x] Vault-key rotation (other devices adopt the new key with the master
+      password), permanent purge that reaches every device, and an
+      inter-process lock (see docs/security.md).
 - [ ] External security review and fixes.
 - [ ] Google OAuth app verification.
 - [ ] Signed packages: MSIX, notarised DMG, Play Store, App Store.
