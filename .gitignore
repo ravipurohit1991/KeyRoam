@@ -15,3 +15,6 @@ sync-state.json
 *.swp
 .DS_Store
 Thumbs.db
+
+# Synthetic test fixtures are allowed
+!app/test/fixtures/*.krv

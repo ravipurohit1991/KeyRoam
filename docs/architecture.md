@@ -4,7 +4,7 @@
 ┌──────────────────────────── Flutter UI (Windows, macOS, Android, iOS) ───────────────────────────┐
 │ onboarding · dashboard · entry editor · conflicts · Sync Now + status · backup export/restore   │
 └───────────────▲──────────────────────────────────────────────────────────────▲──────────────────┘
-                │ flutter_rust_bridge (FFI, planned: crates/keyroam-ffi)       │ platform channels
+                │ keyroam-ffi: C ABI, JSON req/resp, background isolates      │ platform channels
 ┌───────────────┴────────────────────────────┐   ┌───────────────────────────────┴─────────────────┐
 │ keyroam-sync                               │   │ Platform integrations (native code)             │
 │  oauth   PKCE, loopback redirect, refresh  │   │  Desktop: native-messaging host ◄─► browser ext │
@@ -52,6 +52,14 @@
 | `drive` | Drive v3 client: list, download, multipart create, media update. Retries and token refresh |
 | `engine` | Sync rounds, sync status, `create_vault` and `join_vault` onboarding |
 
+### `keyroam-ffi`
+
+A `cdylib` that exports two functions: `keyroam_call(json) -> json` and
+`keyroam_free_string`. The latter wipes each response before freeing it. A
+process-wide `Engine` holds the open vault. Long Google sign-in waits run
+without holding the session lock, so they can be cancelled. The Flutter app
+builds and bundles this library through `app/hook/build.dart`.
+
 ### `keyroam-cli`
 
 The reference front-end and the runnable deliverable for milestones 1–3. Every
@@ -61,7 +69,6 @@ operation the GUI apps will offer is available here first.
 
 | Milestone | Component | Notes |
 |---|---|---|
-| 4 | `app/` Flutter project and `crates/keyroam-ffi` | `flutter_rust_bridge` bindings around `Vault` and the sync engine. Desktop OAuth reuses the Rust loopback flow. Auto-lock and clipboard clearing. Sync on open, after edits, on connectivity change and periodically. |
 | 5 | `browser-extension/` (Manifest V3, Chromium and Firefox) and a native-messaging host | The extension talks only to the locally installed KeyRoam desktop app through native messaging. It never sees the vault, only the credentials the user picks for the current origin. URL matching uses the registrable domain (public-suffix aware). |
 | 6 | Android `CredentialProviderService` (Credential Manager, Android 14+) with an `AutofillService` fallback | Sync through WorkManager. OAuth through a custom-scheme redirect with PKCE. |
 | 7 | iOS `ASCredentialProviderViewController` extension | A shared App Group container for the encrypted vault, unlocked with the master password or Face ID. The key is wrapped in a Keychain item limited to biometry. Sync through BGAppRefreshTask. |

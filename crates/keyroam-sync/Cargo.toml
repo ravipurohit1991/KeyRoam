@@ -21,3 +21,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[features]
+# Exposes `testing::MemoryRemote` for other crates' tests.
+test-util = []

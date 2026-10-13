@@ -8,6 +8,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -308,6 +309,17 @@ impl LoopbackReceiver {
     /// Wait for the browser redirect and return the authorization code.
     /// Requests without a code (e.g. `/favicon.ico`) are ignored.
     pub fn wait_for_code(&self, expected_state: &str, timeout: Duration) -> Result<Zeroizing<String>> {
+        self.wait_for_code_cancellable(expected_state, timeout, &AtomicBool::new(false))
+    }
+
+    /// Like [`Self::wait_for_code`], but returns [`SyncError::Cancelled`] as
+    /// soon as `cancel` is set (e.g. the user closed the sign-in screen).
+    pub fn wait_for_code_cancellable(
+        &self,
+        expected_state: &str,
+        timeout: Duration,
+        cancel: &AtomicBool,
+    ) -> Result<Zeroizing<String>> {
         let deadline = Instant::now() + timeout;
         self.listener.set_nonblocking(true)?;
         loop {
@@ -318,6 +330,9 @@ impl LoopbackReceiver {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if cancel.load(Ordering::SeqCst) {
+                        return Err(SyncError::Cancelled);
+                    }
                     if Instant::now() >= deadline {
                         return Err(SyncError::Auth("timed out waiting for Google sign-in".into()));
                     }
@@ -458,18 +473,64 @@ pub fn authorize_installed_app(
     timeout: Duration,
     open_browser: impl FnOnce(&str),
 ) -> Result<GoogleSession> {
-    let receiver = LoopbackReceiver::bind()?;
-    let redirect_uri = receiver.redirect_uri();
-    let pkce = Pkce::generate();
-    let state = random_state();
-    let url = authorization_url(cfg, &redirect_uri, &pkce, &state)?;
-    open_browser(&url);
-    let code = receiver.wait_for_code(&state, timeout)?;
-    let tokens = exchange_code(cfg, &code, &pkce, &redirect_uri)?;
-    let refresh = tokens.refresh_token.clone().ok_or_else(|| {
-        SyncError::Auth("Google did not issue a refresh token; remove KeyRoam's access in your Google account settings and try again".into())
-    })?;
-    Ok(GoogleSession::new(cfg.clone(), &refresh).with_access_token(&tokens))
+    let pending = PendingAuthorization::begin(cfg)?;
+    open_browser(pending.url());
+    pending.complete(timeout, &AtomicBool::new(false))
+}
+
+/// A desktop sign-in that has been started (loopback listener bound, PKCE and
+/// state generated) but not yet completed. Split in two so GUIs can show the
+/// URL, open the browser themselves and offer a Cancel button.
+pub struct PendingAuthorization {
+    cfg: OAuthClientConfig,
+    receiver: LoopbackReceiver,
+    pkce: Pkce,
+    state: String,
+    url: String,
+}
+
+impl PendingAuthorization {
+    pub fn begin(cfg: &OAuthClientConfig) -> Result<Self> {
+        let receiver = LoopbackReceiver::bind()?;
+        let pkce = Pkce::generate();
+        let state = random_state();
+        let url = authorization_url(cfg, &receiver.redirect_uri(), &pkce, &state)?;
+        Ok(PendingAuthorization {
+            cfg: cfg.clone(),
+            receiver,
+            pkce,
+            state,
+            url,
+        })
+    }
+
+    /// The Google consent URL to open in the user's browser.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Wait for the redirect, then exchange the code for tokens.
+    pub fn complete(self, timeout: Duration, cancel: &AtomicBool) -> Result<GoogleSession> {
+        let code = self.receiver.wait_for_code_cancellable(&self.state, timeout, cancel)?;
+        let tokens = exchange_code(&self.cfg, &code, &self.pkce, &self.receiver.redirect_uri())?;
+        let refresh = tokens.refresh_token.clone().ok_or_else(|| {
+            SyncError::Auth("Google did not issue a refresh token; remove KeyRoam's access in your Google account settings and try again".into())
+        })?;
+        Ok(GoogleSession::new(self.cfg, &refresh).with_access_token(&tokens))
+    }
+}
+
+/// Open `url` in the system browser. Returns false if no browser could be launched.
+pub fn open_system_browser(url: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    let r = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    r.is_ok()
 }
 
 #[cfg(test)]
@@ -563,6 +624,23 @@ mod tests {
     fn loopback_times_out() {
         let r = LoopbackReceiver::bind().unwrap();
         assert!(r.wait_for_code("s", Duration::from_millis(200)).is_err());
+    }
+
+    #[test]
+    fn pending_authorization_can_be_cancelled() {
+        let cfg = OAuthClientConfig::google("client-id", None);
+        let pending = PendingAuthorization::begin(&cfg).unwrap();
+        assert!(pending.url().starts_with(GOOGLE_AUTH_URL));
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let c2 = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            c2.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let r = pending.complete(Duration::from_secs(30), &cancel);
+        assert!(matches!(r, Err(SyncError::Cancelled)));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     /// A local stand-in for Google's token endpoint that enforces PKCE.

@@ -17,11 +17,16 @@ pub mod oauth;
 pub mod remote;
 #[cfg(test)]
 mod test_server;
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing;
 
 pub use drive::DriveClient;
 pub use engine::{
     commit_local_change, create_vault, fetch_remote_header, join_vault, sync, SyncReport, SyncState, SyncStatus,
 };
 pub use error::{Result, SyncError};
-pub use oauth::{authorize_installed_app, AccessTokenSource, GoogleSession, OAuthClientConfig};
+pub use oauth::{
+    authorize_installed_app, open_system_browser, AccessTokenSource, GoogleSession, OAuthClientConfig,
+    PendingAuthorization,
+};
 pub use remote::{RemoteFile, RemoteStore};

@@ -24,14 +24,14 @@ Google Drive), every device.
 | 1 | Encrypted local vault (Rust) | ✅ Done: `keyroam-core`, with tests |
 | 2 | Google OAuth 2.0 + PKCE | ✅ Done: `keyroam-sync::oauth`, with tests |
 | 3 | Encrypted Google Drive sync | ✅ Done: `keyroam-sync::engine` / `drive`, with tests |
-| 4 | Windows and macOS desktop apps (Flutter) | ⏳ Next |
-| 5 | Desktop browser autofill extension | Planned |
+| 4 | Windows and macOS desktop apps (Flutter) | ✅ Done: `app/` + `keyroam-ffi`, with tests (macOS built in CI only) |
+| 5 | Desktop browser autofill extension | ⏳ Next |
 | 6 | Android app + Credential Manager provider | Planned |
 | 7 | iOS app + AutoFill Credential Provider extension | Planned |
 | 8 | Cross-device tests, security review, packaging | Planned |
 
-Milestones 1–3 ship a runnable command-line client, `keyroam`, built on the
-same Rust engine that the Flutter apps will use. See [ROADMAP.md](ROADMAP.md).
+The desktop app (`app/`) and the command-line client (`keyroam`) share the
+same Rust engine. See [ROADMAP.md](ROADMAP.md).
 
 ## Repository layout
 
@@ -42,6 +42,8 @@ crates/
   keyroam-sync/   Google OAuth (PKCE, loopback redirect), Drive v3 appDataFolder
                   client, sync protocol, onboarding flows.
   keyroam-cli/    `keyroam` command-line client.
+  keyroam-ffi/    C ABI (JSON request/response) used by the Flutter app.
+app/              Flutter desktop app (Windows, macOS). See app/README.md.
 docs/
   architecture.md       Components and how the apps fit together
   security.md           Cryptographic design, threat model, limitations
@@ -54,12 +56,22 @@ docs/
 You need a stable Rust toolchain (<https://rustup.rs>).
 
 ```sh
-cargo test --workspace      # 75 tests: crypto, merge properties, sync, OAuth, CLI
+cargo test --workspace      # 85 tests: crypto, merge properties, sync, OAuth, FFI, CLI
 cargo build --release -p keyroam-cli
 ```
 
 The tests never contact Google. OAuth and Drive code is exercised against local
 HTTP stand-ins for Google's endpoints. The tests use only synthetic secrets.
+
+## Desktop app
+
+```sh
+cd app
+flutter run -d windows      # or -d macos; needs Flutter 3.47+
+flutter test                # real-engine FFI tests + UI flow tests
+```
+
+See [app/README.md](app/README.md) for the full details.
 
 ## Using the CLI
 

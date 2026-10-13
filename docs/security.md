@@ -135,4 +135,7 @@ See [sync-protocol.md](sync-protocol.md). Security-relevant properties:
 6. **No inter-process lock.** Two KeyRoam processes writing the same data
    directory at the same moment could lose a local edit. Planned: an advisory
    file lock.
-7. **Clipboard handling and auto-lock** will come with the GUI apps (milestone 4).
+7. **Desktop app:** the app auto-locks after 5 min of inactivity and clears copied
+   passwords from the clipboard after 30 s. It does not yet lock when the OS
+   locks or sleeps. Dart strings that hold secrets cannot be wiped, so they
+   remain in memory until garbage-collected.

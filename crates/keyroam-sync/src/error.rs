@@ -22,6 +22,8 @@ pub enum SyncError {
     RemoteVaultExists,
     #[error("Google OAuth client is not configured: {0}")]
     NotConfigured(String),
+    #[error("cancelled")]
+    Cancelled,
 }
 
 impl SyncError {

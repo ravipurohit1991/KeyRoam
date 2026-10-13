@@ -261,15 +261,7 @@ fn report_sync(r: &SyncReport, quiet: bool) {
 
 fn open_browser(url: &str) {
     eprintln!("\nOpen this URL to sign in with Google (opening your browser):\n\n  {url}\n");
-    #[cfg(target_os = "windows")]
-    let r = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .spawn();
-    #[cfg(target_os = "macos")]
-    let r = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let r = std::process::Command::new("xdg-open").arg(url).spawn();
-    if r.is_err() {
+    if !keyroam_sync::open_system_browser(url) {
         eprintln!("(could not open a browser automatically)");
     }
 }

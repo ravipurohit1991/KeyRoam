@@ -36,6 +36,36 @@ jobs:
       - run: cargo test --workspace --locked
       - run: cargo build --release --locked -p keyroam-cli
 
+  desktop-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build: windows
+          - os: macos-latest
+            build: macos
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS release builds are universal (arm64 + x64).
+          targets: ${{ matrix.build == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.7
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test hook
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build ${{ matrix.build }} --release
+
   audit:
     runs-on: ubuntu-latest
     steps:

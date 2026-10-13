@@ -34,21 +34,31 @@ retries with backoff, and new-user and existing-user onboarding. It has 27 tests
 including an end-to-end run of the real HTTP client against a local Drive
 stand-in. The `keyroam` CLI exposes all of it and has 6 integration tests.
 
-## ⏳ 4. Windows and macOS desktop apps
+## ✅ 4. Windows and macOS desktop apps
 
-- [ ] Install Flutter. Create `app/` with Windows and macOS targets.
-- [ ] Create `crates/keyroam-ffi` with `flutter_rust_bridge`, exposing an
-      opaque `Vault` handle, entry CRUD, sync, status and onboarding.
-- [ ] Onboarding screens that follow the required flows exactly. Dashboard,
-      search, entry editor, password generator, conflict resolver, Sync Now
-      with a status indicator, and backup export and restore.
-- [ ] Auto-lock (idle timeout, OS lock or sleep). Clipboard auto-clear.
-- [ ] Sync on open, after edits, on connectivity regained, and periodically
-      while running.
+`app/` (Flutter 3.47) together with `crates/keyroam-ffi`. The FFI layer is a
+two-function C ABI that carries JSON requests and responses; a Dart build hook
+compiles and bundles it, and calls run on background isolates.
+
+- [x] Onboarding follows the required flows exactly: new user (password,
+      Google, create and sync) and existing user (Google, download, password).
+- [x] Dashboard, search, entry editor, password generator, password history,
+      conflict resolver, recently deleted, Sync Now with a status chip,
+      encrypted backup export and restore, master-password change, and
+      Google sign-in and sign-out.
+- [x] Auto-lock after inactivity. The clipboard is cleared after 30 s.
+- [x] Sync on unlock, after edits (debounced), periodically, and by retry when
+      connectivity returns.
+- [x] Tests: 9 Rust FFI tests; native Dart tests that run against the real
+      engine; 8 widget tests of the UI flows. CI builds on Windows and macOS.
+- [ ] Native file picker for backups (`file_selector`). Flutter plugins need
+      Windows Developer Mode on the build machine, so this is deferred.
+      Under the macOS sandbox, exports currently go to the app container.
 - [ ] Advisory file lock on the data directory.
-- [ ] Widget and integration tests (Flutter `integration_test`) on both OSes in CI.
+- [ ] Lock when the OS locks or sleeps. A KeyRoam app icon.
+- [ ] Verified on a real macOS machine (so far it is only built in CI).
 
-## 5. Desktop browser autofill
+## ⏳ 5. Desktop browser autofill
 
 - [ ] Manifest V3 extension for Chromium-based browsers and Firefox.
 - [ ] Native-messaging host bundled with the desktop app. The extension can
