@@ -3,6 +3,7 @@ name = "keyroam-ffi"
 description = "C ABI over the KeyRoam engine for the Flutter apps (JSON request/response)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 
 [lib]
@@ -11,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 keyroam-core = { path = "../keyroam-core" }
 keyroam-sync = { path = "../keyroam-sync" }
+keyroam-autofill = { path = "../keyroam-autofill" }
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -13,6 +13,11 @@
 //! * The merge is commutative, associative and idempotent (a state-based CRDT),
 //!   so every device converges regardless of sync order, and replaying stale
 //!   data can never remove newer data.
+//! * A permanent purge records the entry's clock as a *purge mark*. Merges
+//!   join the marks and erase every version at or before them, together with
+//!   the entry's history, so a purge reaches every device and stale replicas
+//!   cannot bring the data back. An edit made concurrently on a device that
+//!   had not seen the purged state is not covered by the mark and survives.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -185,7 +190,7 @@ impl EntryRecord {
     }
 
     /// The clock that dominates all current siblings.
-    fn joined_clock(&self) -> VersionVector {
+    pub(crate) fn joined_clock(&self) -> VersionVector {
         self.versions
             .iter()
             .fold(VersionVector::default(), |acc, v| acc.join(&v.clock))
@@ -238,6 +243,31 @@ impl EntryRecord {
         }
     }
 
+    /// Best-effort wipe of the record's secret content held in memory.
+    fn wipe(&mut self) {
+        for v in self.versions.iter_mut().chain(self.history.iter_mut()) {
+            if let Some(d) = v.data.as_mut() {
+                d.zeroize();
+            }
+        }
+    }
+
+    /// Apply a purge mark: drop the versions it covers and all history.
+    /// Returns `None` when nothing survives.
+    fn purged(&self, mark: &VersionVector) -> Option<EntryRecord> {
+        let versions: Vec<Version> = self
+            .versions
+            .iter()
+            .filter(|v| !matches!(v.clock.compare(mark), Causality::Before | Causality::Equal))
+            .cloned()
+            .collect();
+        (!versions.is_empty()).then(|| EntryRecord {
+            id: self.id,
+            versions,
+            history: Vec::new(),
+        })
+    }
+
     fn validate(&self) -> Result<()> {
         if self.versions.is_empty() {
             return Err(Error::Format("entry without versions".into()));
@@ -277,6 +307,10 @@ pub struct VaultState {
     pub schema: u32,
     #[serde(default)]
     pub entries: BTreeMap<EntryId, EntryRecord>,
+    /// Purge marks: for each permanently purged entry, the clock up to which
+    /// its versions are erased everywhere.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub purged: BTreeMap<EntryId, VersionVector>,
 }
 
 impl Default for VaultState {
@@ -284,6 +318,7 @@ impl Default for VaultState {
         VaultState {
             schema: STATE_SCHEMA,
             entries: BTreeMap::new(),
+            purged: BTreeMap::new(),
         }
     }
 }
@@ -310,23 +345,75 @@ impl VaultState {
     /// Merge `other` into `self`. Returns true if `self` changed.
     pub fn merge_from(&mut self, other: &VaultState) -> bool {
         let mut changed = false;
+        let mut new_marks = Vec::new();
+        for (id, mark) in &other.purged {
+            let joined = match self.purged.get(id) {
+                Some(ours) => ours.join(mark),
+                None => mark.clone(),
+            };
+            if self.purged.get(id) != Some(&joined) {
+                self.purged.insert(*id, joined);
+                new_marks.push(*id);
+                changed = true;
+            }
+        }
         for (id, theirs) in &other.entries {
-            match self.entries.get(id) {
-                None => {
-                    let normalized = theirs.merge(theirs);
-                    self.entries.insert(*id, normalized);
-                    changed = true;
-                }
-                Some(ours) => {
-                    let merged = ours.merge(theirs);
-                    if &merged != ours {
-                        self.entries.insert(*id, merged);
-                        changed = true;
+            let merged = match self.entries.get(id) {
+                Some(ours) => ours.merge(theirs),
+                None => theirs.merge(theirs),
+            };
+            let merged = match self.purged.get(id) {
+                Some(mark) => merged.purged(mark),
+                None => Some(merged),
+            };
+            if self.entries.get(id) != merged.as_ref() {
+                changed = true;
+                match merged {
+                    Some(m) => {
+                        self.entries.insert(*id, m);
+                    }
+                    None => {
+                        if let Some(mut gone) = self.entries.remove(id) {
+                            gone.wipe();
+                        }
                     }
                 }
             }
         }
+        for id in new_marks {
+            self.enforce_purge(id);
+        }
         changed
+    }
+
+    /// Record a purge of `id` up to `clock` and apply it.
+    pub fn add_purge(&mut self, id: EntryId, clock: VersionVector) {
+        let joined = match self.purged.get(&id) {
+            Some(ours) => ours.join(&clock),
+            None => clock,
+        };
+        self.purged.insert(id, joined);
+        self.enforce_purge(id);
+    }
+
+    /// Re-apply the purge mark of `id`, if any (also after a local edit of a
+    /// surviving entry, which must not grow its history). Returns true if the
+    /// state changed.
+    pub fn enforce_purge(&mut self, id: EntryId) -> bool {
+        let (Some(mark), Some(rec)) = (self.purged.get(&id), self.entries.get(&id)) else {
+            return false;
+        };
+        match rec.purged(mark) {
+            None => {
+                self.entries.remove(&id).expect("present").wipe();
+                true
+            }
+            Some(kept) if &kept != rec => {
+                self.entries.insert(id, kept);
+                true
+            }
+            Some(_) => false,
+        }
     }
 
     pub fn merged(&self, other: &VaultState) -> VaultState {
@@ -338,11 +425,7 @@ impl VaultState {
     /// Best-effort wipe of all secret content held in memory.
     pub fn wipe(&mut self) {
         for rec in self.entries.values_mut() {
-            for v in rec.versions.iter_mut().chain(rec.history.iter_mut()) {
-                if let Some(d) = v.data.as_mut() {
-                    d.zeroize();
-                }
-            }
+            rec.wipe();
         }
     }
 
@@ -454,6 +537,69 @@ mod tests {
     }
 
     #[test]
+    fn purge_reaches_every_copy_and_is_not_resurrected() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let id = Uuid::new_v4();
+        let mut on_a = VaultState::default();
+        on_a.entries
+            .insert(id, EntryRecord::new_local(id, a, 1, data("t", "secret-1")));
+        on_a.entries
+            .get_mut(&id)
+            .unwrap()
+            .supersede(a, 2, Some(data("t", "secret-2")));
+        on_a.entries.get_mut(&id).unwrap().supersede(a, 3, None);
+        let stale_b = on_a.clone();
+
+        let clock = on_a.entries[&id].joined_clock();
+        on_a.add_purge(id, clock);
+        assert!(on_a.entries.is_empty());
+        // A device that still has the deleted entry (and its history) learns
+        // of the purge, and its stale copy cannot bring it back.
+        let mut on_b = stale_b.clone();
+        assert!(on_b.merge_from(&on_a));
+        assert!(on_b.entries.is_empty());
+        assert!(!on_a.merge_from(&stale_b));
+        assert!(on_a.entries.is_empty());
+        let _ = b;
+    }
+
+    #[test]
+    fn edit_concurrent_with_purge_survives_without_old_history() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let id = Uuid::new_v4();
+        let mut base = VaultState::default();
+        base.entries
+            .insert(id, EntryRecord::new_local(id, a, 1, data("t", "old-secret")));
+        base.entries.get_mut(&id).unwrap().supersede(a, 2, None);
+
+        let mut on_a = base.clone();
+        let clock = on_a.entries[&id].joined_clock();
+        on_a.add_purge(id, clock);
+        // Meanwhile b, which had not seen the purge, restores and edits it.
+        let mut on_b = base.clone();
+        on_b.entries
+            .get_mut(&id)
+            .unwrap()
+            .supersede(b, 3, Some(data("t", "new-secret")));
+
+        let merged = on_a.merged(&on_b);
+        assert_eq!(merged, on_b.merged(&on_a));
+        let rec = &merged.entries[&id];
+        assert_eq!(rec.versions.len(), 1);
+        assert_eq!(rec.current().data.as_ref().unwrap().password, "new-secret");
+        assert!(rec.history.is_empty(), "the purged past is gone");
+        assert!(!rec.has_conflict());
+    }
+
+    #[test]
+    fn state_without_purges_serialises_as_before() {
+        let s = VaultState::default();
+        assert_eq!(serde_json::to_string(&s).unwrap(), r#"{"schema":1,"entries":{}}"#);
+        let old: VaultState = serde_json::from_str(r#"{"schema":1,"entries":{}}"#).unwrap();
+        assert!(old.purged.is_empty());
+    }
+
+    #[test]
     fn history_is_capped() {
         let a = Uuid::new_v4();
         let mut r = EntryRecord::new_local(Uuid::new_v4(), a, 0, data("t", "p0"));
@@ -500,6 +646,7 @@ mod tests {
         Add(usize, u8),
         Edit(usize, u8, u8),
         Delete(usize, u8),
+        Purge(usize, u8),
         Sync(usize, usize),
     }
 
@@ -508,6 +655,7 @@ mod tests {
             (0..3usize, 0..4u8).prop_map(|(d, e)| Op::Add(d, e)),
             (0..3usize, 0..4u8, any::<u8>()).prop_map(|(d, e, p)| Op::Edit(d, e, p)),
             (0..3usize, 0..4u8).prop_map(|(d, e)| Op::Delete(d, e)),
+            (0..3usize, 0..4u8).prop_map(|(d, e)| Op::Purge(d, e)),
             (0..3usize, 0..3usize).prop_map(|(a, b)| Op::Sync(a, b)),
         ]
     }
@@ -522,7 +670,9 @@ mod tests {
             let now = t as i64;
             let (d, e, new) = match *op {
                 Op::Add(d, e) => {
-                    if !states[d].entries.contains_key(&ids[e as usize]) {
+                    // Real ids are random and never reused after a purge.
+                    let id = ids[e as usize];
+                    if !states[d].entries.contains_key(&id) && !states[d].purged.contains_key(&id) {
                         let rec = EntryRecord::new_local(ids[e as usize], devices[d], now, data("t", "init"));
                         written.push((rec.id, rec.versions[0].clone()));
                         states[d].entries.insert(rec.id, rec);
@@ -531,6 +681,14 @@ mod tests {
                 }
                 Op::Edit(d, e, p) => (d, e, Some(data("t", &format!("pw{p}")))),
                 Op::Delete(d, e) => (d, e, None),
+                Op::Purge(d, e) => {
+                    let id = ids[e as usize];
+                    if let Some(rec) = states[d].entries.get(&id) {
+                        let clock = rec.joined_clock();
+                        states[d].add_purge(id, clock);
+                    }
+                    continue;
+                }
                 Op::Sync(a, b) => {
                     let sb = states[b].clone();
                     states[a].merge_from(&sb);
@@ -540,6 +698,7 @@ mod tests {
             if let Some(rec) = states[d].entries.get_mut(&ids[e as usize]) {
                 rec.supersede(devices[d], now, new);
                 written.push((rec.id, rec.versions[0].clone()));
+                states[d].enforce_purge(ids[e as usize]);
             }
         }
         (states, written)
@@ -556,7 +715,13 @@ mod tests {
             prop_assert_eq!(s[0].merged(&s[0]), s[0].clone());
             let m = s[0].merged(&s[1]);
             prop_assert_eq!(m.merged(&m), m.clone());
-            prop_assert_eq!(m.merged(&s[0]), m);
+            prop_assert_eq!(m.merged(&s[0]), m.clone());
+            // "changed" is exact: sync uploads only when something changed.
+            for (a, b) in [(&s[0], &s[1]), (&m, &s[2]), (&m, &s[0])] {
+                let mut x = a.clone();
+                let changed = x.merge_from(b);
+                prop_assert_eq!(changed, &x != a);
+            }
         }
 
         #[test]
@@ -566,6 +731,11 @@ mod tests {
             // Every version ever written is either still a sibling, or strictly
             // superseded by a sibling (i.e. some device saw it before editing).
             for (id, v) in written {
+                // Purged on purpose: covered by a purge mark.
+                if all.purged.get(&id).is_some_and(|m| matches!(v.clock.compare(m), Causality::Before | Causality::Equal)) {
+                    prop_assert!(all.entries.get(&id).is_none_or(|r| !r.versions.contains(&v) && r.history.is_empty()));
+                    continue;
+                }
                 let rec = all.entries.get(&id).expect("entry lost");
                 let kept = rec.versions.contains(&v)
                     || rec.versions.iter().any(|s| s.clock.compare(&v.clock) == Causality::After);

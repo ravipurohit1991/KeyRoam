@@ -191,6 +191,22 @@ fn entries_conflicts_and_sync() {
         0
     );
     assert_eq!(a.err("get_entry", json!({ "id": "nope" })), "invalid_input");
+
+    // Permanent purge reaches the other device.
+    assert_eq!(a.err("purge_entry", json!({ "id": id })), "invalid_input");
+    a.ok("delete_entry", json!({ "id": id }));
+    assert_eq!(a.ok("purge_deleted", json!({}))["purged"], 1);
+    assert_eq!(a.err("get_entry", json!({ "id": id })), "not_found");
+    a.ok("sync", json!({}));
+    b.ok("sync", json!({}));
+    assert_eq!(b.err("get_entry", json!({ "id": id })), "not_found");
+    assert_eq!(
+        b.ok("list_entries", json!({ "deleted": true }))
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 }
 
 #[test]
@@ -229,6 +245,67 @@ fn offline_lock_unlock_and_password_change() {
         ),
         "wrong_password"
     );
+}
+
+#[test]
+fn vault_key_rotation_between_devices() {
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    let id = a.add("Example", "synthetic-1");
+    a.ok("sync", json!({}));
+    let b = Device::new();
+    b.sign_in(&remote);
+    b.ok("fetch_remote_vault", json!({}));
+    b.ok("join_vault", json!({ "password": PW }));
+
+    assert_eq!(
+        a.err("rotate_vault_key", json!({ "password": "wrong-password-xyz" })),
+        "wrong_password"
+    );
+    a.ok("rotate_vault_key", json!({ "password": PW }));
+    a.ok("sync", json!({}));
+    assert_eq!(b.err("sync", json!({})), "key_rotated");
+    assert_eq!(
+        b.err("adopt_rotated_key", json!({ "password": "wrong-password-xyz" })),
+        "wrong_password"
+    );
+    let r = b.ok("adopt_rotated_key", json!({ "password": PW }));
+    assert!(r["sync"]["report"].is_object(), "{r}");
+    assert_eq!(b.password(&id), "synthetic-1");
+    // The re-encrypted local vault and secrets open with the password.
+    b.ok("lock", json!({}));
+    assert_eq!(b.ok("unlock", json!({ "password": PW }))["signed_in"], true);
+    assert_eq!(b.password(&id), "synthetic-1");
+}
+
+#[test]
+fn csv_import_from_a_browser_export() {
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    let csv = a._dir.path().join("Chrome Passwords.csv");
+    std::fs::write(
+        &csv,
+        "name,url,username,password,note\nexample.com,https://example.com/,alice,synthetic-1,\nexample.com,https://example.com/,alice,synthetic-1,\n,,,,\n",
+    )
+    .unwrap();
+    let r = a.ok(
+        "import_csv",
+        json!({ "path": csv.to_str().unwrap(), "delete_file": true }),
+    );
+    assert_eq!(r["format"], "Chrome");
+    assert_eq!(
+        (r["added"].as_u64(), r["duplicates"].as_u64(), r["skipped"].as_u64()),
+        (Some(1), Some(1), Some(1))
+    );
+    assert_eq!(r["deleted"], true);
+    assert!(!csv.exists());
+    assert_eq!(a.ok("state", json!({}))["entry_count"], 1);
+    assert_eq!(a.ok("state", json!({}))["sync"]["pending_upload"], true);
+    assert_eq!(a.err("import_csv", json!({ "path": csv.to_str().unwrap() })), "io");
 }
 
 #[test]
@@ -311,4 +388,87 @@ fn civil_dates() {
     assert_eq!(civil_date(19_723), (2024, 1, 1));
     assert_eq!(civil_date(20_739), (2026, 10, 13));
     assert_eq!(civil_date(11_016), (2000, 2, 29));
+}
+
+#[test]
+fn browser_integration_serves_the_extension_only_while_unlocked() {
+    use keyroam_autofill::bridge::{BridgeClient, BRIDGE_FILE};
+
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    let dir = a._dir.path().to_path_buf();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    let id = a.ok(
+        "add_entry",
+        json!({ "data": { "title": "Example", "username": "alice", "password": "synthetic-1",
+                          "urls": ["https://example.com"] } }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Off by default.
+    assert_eq!(a.ok("state", json!({}))["browser_integration"], false);
+    assert!(!dir.join(BRIDGE_FILE).exists());
+    let st = a.ok("set_browser_integration", json!({ "enabled": true }));
+    assert_eq!(st["browser_integration"], true);
+
+    let call = |c: &mut BridgeClient, v: Value| -> Value {
+        serde_json::from_slice(&c.call(v.to_string().as_bytes()).unwrap()).unwrap()
+    };
+    let mut c = BridgeClient::connect(&dir).unwrap();
+    let page = json!({ "url": "https://login.example.com/", "top_url": "https://login.example.com/" });
+    let r = call(
+        &mut c,
+        json!({ "rid": 1, "type": "credential", "page": page, "id": id }),
+    );
+    assert_eq!(r["ok"]["password"], "synthetic-1");
+
+    // A save from the browser is persisted, queued for sync and announced.
+    let rev = a.ok("state", json!({}))["revision"].as_u64().unwrap();
+    let r = call(
+        &mut c,
+        json!({ "rid": 2, "type": "save", "page": page, "username": "bob", "password": "synthetic-2" }),
+    );
+    assert_eq!(r["ok"]["updated"], false);
+    let st = a.ok("state", json!({}));
+    assert_eq!(st["revision"].as_u64().unwrap(), rev + 1);
+    assert_eq!(st["entry_count"], 2);
+    assert_eq!(st["sync"]["pending_upload"], true);
+
+    // Locked: nothing is released.
+    a.ok("lock", json!({}));
+    let r = call(
+        &mut c,
+        json!({ "rid": 3, "type": "credential", "page": page, "id": id }),
+    );
+    assert_eq!(r["error"]["code"], "locked");
+    a.ok("unlock", json!({ "password": PW }));
+    assert_eq!(a.ok("list_entries", json!({})).as_array().unwrap().len(), 2);
+
+    // The setting survives a restart of the app.
+    let restarted = Engine::with_kdf_cost(KdfCost::MINIMUM);
+    restarted
+        .dispatch("open", json!({ "data_dir": dir.to_str().unwrap() }))
+        .unwrap();
+    assert_eq!(
+        restarted.dispatch("state", json!({})).unwrap()["browser_integration"],
+        true
+    );
+    drop(restarted);
+
+    a.ok("set_browser_integration", json!({ "enabled": true }));
+    a.ok("set_browser_integration", json!({ "enabled": false }));
+    assert!(!dir.join(BRIDGE_FILE).exists());
+    assert!(BridgeClient::connect(&dir).is_err());
+    assert_eq!(a.ok("state", json!({}))["browser_integration"], false);
+
+    assert_eq!(
+        a.err(
+            "install_browser_host",
+            json!({ "host_path": dir.join("missing-host").to_str().unwrap() })
+        ),
+        "not_found"
+    );
 }

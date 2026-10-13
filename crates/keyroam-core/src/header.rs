@@ -13,6 +13,14 @@
 //! replicas on other devices stay readable. The header MAC (keyed by the vault
 //! key) lets a device verify that a header downloaded from the cloud was
 //! produced by a holder of the vault key before adopting it.
+//!
+//! Rotating the vault key ([`VaultHeader::rotate`]) creates a fresh key with
+//! the next `key_epoch` and a version-2 header. The earlier keys travel inside
+//! it, encrypted under the new key (`previous_keys`), so data that devices
+//! wrote before adopting the new key stays readable. The new key is never
+//! encrypted under an old one: whoever holds an old key or an old password
+//! learns nothing about it. Other devices need the master password to adopt
+//! a rotated header.
 
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -24,9 +32,18 @@ use crate::kdf::{KdfCost, KdfParams};
 use crate::now_millis;
 
 pub const HEADER_FORMAT: &str = "keyroam-vault-header";
-pub const HEADER_VERSION: u32 = 1;
+/// Version 1: never rotated. Version 2: rotated (`key_epoch` ≥ 2).
+pub const HEADER_VERSION: u32 = 2;
 
 const PURPOSE_HEADER_AUTH: &[u8] = b"keyroam/v1/header-auth";
+const PURPOSE_KEYRING: &[u8] = b"keyroam/v2/keyring";
+
+fn first_epoch() -> u32 {
+    1
+}
+fn is_first_epoch(e: &u32) -> bool {
+    *e == 1
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultHeader {
@@ -39,9 +56,18 @@ pub struct VaultHeader {
     pub updated_at: i64,
     pub kdf: KdfParams,
     pub wrapped_key: Sealed,
+    /// Generation of the vault key, incremented by every key rotation.
+    #[serde(default = "first_epoch", skip_serializing_if = "is_first_epoch")]
+    pub key_epoch: u32,
+    /// Earlier vault keys with their epochs, encrypted under the current key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_keys: Option<Sealed>,
     /// HMAC-SHA256 over all fields above, keyed by a vault-key sub-key.
     pub auth: B64Bytes,
 }
+
+/// An earlier vault key and its epoch.
+pub type PreviousKey = (u32, SecretKey);
 
 impl VaultHeader {
     /// Create a new vault key protected by `password`.
@@ -49,10 +75,11 @@ impl VaultHeader {
         check_password_policy(password)?;
         let key = SecretKey::generate();
         let now = now_millis();
-        let header = Self::build(Uuid::new_v4(), 1, now, now, password, cost, &key)?;
+        let header = Self::build(Uuid::new_v4(), 1, now, now, password, cost, &key, 1, &[])?;
         Ok((header, key))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         vault_id: Uuid,
         revision: u64,
@@ -61,19 +88,37 @@ impl VaultHeader {
         password: &str,
         cost: KdfCost,
         key: &SecretKey,
+        key_epoch: u32,
+        previous: &[PreviousKey],
     ) -> Result<VaultHeader> {
         let kdf = KdfParams::new_random(cost)?;
         let kek = kdf.derive_key(password)?;
         let wrapped_key = crypto::seal(&kek, key.as_bytes(), &wrap_aad(&vault_id, &kdf))?;
+        let previous_keys = if key_epoch == 1 {
+            None
+        } else {
+            let mut raw = zeroize::Zeroizing::new(Vec::with_capacity(previous.len() * 36));
+            for (epoch, k) in previous {
+                raw.extend_from_slice(&epoch.to_be_bytes());
+                raw.extend_from_slice(k.as_bytes());
+            }
+            Some(crypto::seal(
+                &key.derive(PURPOSE_KEYRING),
+                &raw,
+                &keyring_aad(&vault_id, key_epoch),
+            )?)
+        };
         let mut header = VaultHeader {
             format: HEADER_FORMAT.into(),
-            version: HEADER_VERSION,
+            version: if key_epoch == 1 { 1 } else { 2 },
             vault_id,
             revision,
             created_at,
             updated_at,
             kdf,
             wrapped_key,
+            key_epoch,
+            previous_keys,
             auth: B64Bytes::default(),
         };
         header.auth = B64Bytes(crypto::hmac_sha256(
@@ -94,7 +139,55 @@ impl VaultHeader {
                 supported: HEADER_VERSION,
             });
         }
+        let rotated = self.version >= 2;
+        if rotated != (self.key_epoch >= 2) || rotated != self.previous_keys.is_some() || self.key_epoch == 0 {
+            return Err(Error::Format("inconsistent vault key epoch".into()));
+        }
         Ok(())
+    }
+
+    /// The earlier vault keys of a rotated header, newest first. `key` must
+    /// be this header's key.
+    pub fn previous_keys(&self, key: &SecretKey) -> Result<Vec<PreviousKey>> {
+        let Some(sealed) = &self.previous_keys else {
+            return Ok(Vec::new());
+        };
+        let raw = crypto::open(
+            &key.derive(PURPOSE_KEYRING),
+            sealed,
+            &keyring_aad(&self.vault_id, self.key_epoch),
+        )?;
+        if raw.len() % 36 != 0 {
+            return Err(Error::Format("malformed key list".into()));
+        }
+        raw.chunks(36)
+            .map(|c| {
+                let epoch = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+                Ok((epoch, SecretKey::from_bytes(&c[4..])?))
+            })
+            .collect()
+    }
+
+    /// A new header revision with a fresh vault key of the next epoch,
+    /// protected by `password`. Returns the header and the new key.
+    pub fn rotate(&self, key: &SecretKey, password: &str, cost: KdfCost) -> Result<(VaultHeader, SecretKey)> {
+        check_password_policy(password)?;
+        self.verify(key)?;
+        let mut previous = self.previous_keys(key)?;
+        previous.insert(0, (self.key_epoch, key.clone()));
+        let new_key = SecretKey::generate();
+        let header = Self::build(
+            self.vault_id,
+            self.revision + 1,
+            self.created_at,
+            now_millis().max(self.updated_at),
+            password,
+            cost,
+            &new_key,
+            self.key_epoch + 1,
+            &previous,
+        )?;
+        Ok((header, new_key))
     }
 
     /// Derive the KEK from `password`, unwrap the vault key and verify the
@@ -120,6 +213,7 @@ impl VaultHeader {
     pub fn rewrap(&self, key: &SecretKey, new_password: &str, cost: KdfCost) -> Result<VaultHeader> {
         check_password_policy(new_password)?;
         self.verify(key)?;
+        let previous = self.previous_keys(key)?;
         Self::build(
             self.vault_id,
             self.revision + 1,
@@ -128,6 +222,8 @@ impl VaultHeader {
             new_password,
             cost,
             key,
+            self.key_epoch,
+            &previous,
         )
     }
 
@@ -140,8 +236,8 @@ impl VaultHeader {
     }
 
     fn auth_transcript(&self) -> Vec<u8> {
-        Transcript::new("keyroam/v1/header")
-            .str(&self.format)
+        let mut t = Transcript::new("keyroam/v1/header");
+        t.str(&self.format)
             .u64(self.version as u64)
             .str(&self.vault_id.to_string())
             .u64(self.revision)
@@ -149,9 +245,22 @@ impl VaultHeader {
             .u64(self.updated_at as u64)
             .bytes(&kdf_transcript(&self.kdf))
             .bytes(&self.wrapped_key.nonce.0)
-            .bytes(&self.wrapped_key.ciphertext.0)
-            .finish()
+            .bytes(&self.wrapped_key.ciphertext.0);
+        if self.version >= 2 {
+            t.u64(self.key_epoch as u64);
+            if let Some(p) = &self.previous_keys {
+                t.bytes(&p.nonce.0).bytes(&p.ciphertext.0);
+            }
+        }
+        t.finish()
     }
+}
+
+fn keyring_aad(vault_id: &Uuid, epoch: u32) -> Vec<u8> {
+    Transcript::new("keyroam/v2/keyring")
+        .str(&vault_id.to_string())
+        .u64(epoch as u64)
+        .finish()
 }
 
 fn kdf_transcript(kdf: &KdfParams) -> Vec<u8> {
@@ -237,6 +346,57 @@ mod tests {
         assert_eq!(k2.as_bytes(), key.as_bytes());
         assert!(h2.password_matches(&key, "another-synthetic-pw"));
         assert!(!h2.password_matches(&key, PW));
+    }
+
+    #[test]
+    fn rotation_makes_a_fresh_key_and_keeps_the_old_ones_behind_it() {
+        let (h1, k1) = VaultHeader::create(PW, KdfCost::MINIMUM).unwrap();
+        let v1 = serde_json::to_string(&h1).unwrap();
+        assert!(
+            !v1.contains("key_epoch") && !v1.contains("previous_keys"),
+            "v1 headers are unchanged"
+        );
+        assert_eq!(h1.version, 1);
+
+        let (h2, k2) = h1.rotate(&k1, PW, KdfCost::MINIMUM).unwrap();
+        assert_ne!(k1.as_bytes(), k2.as_bytes());
+        assert_eq!((h2.version, h2.key_epoch, h2.revision), (2, 2, 2));
+        assert_eq!(h2.unlock(PW).unwrap().as_bytes(), k2.as_bytes());
+        // Old key holders cannot verify (or read anything from) the new header.
+        assert!(h2.verify(&k1).is_err());
+        assert!(h2.previous_keys(&k1).is_err());
+        let prev = h2.previous_keys(&k2).unwrap();
+        assert_eq!(prev.len(), 1);
+        assert_eq!((prev[0].0, prev[0].1.as_bytes()), (1, k1.as_bytes()));
+
+        // A password change keeps the key and the key list.
+        let h2b = h2.rewrap(&k2, "another-synthetic-pw", KdfCost::MINIMUM).unwrap();
+        assert_eq!(h2b.key_epoch, 2);
+        assert_eq!(h2b.previous_keys(&k2).unwrap()[0].1.as_bytes(), k1.as_bytes());
+
+        let (h3, k3) = h2b.rotate(&k2, "another-synthetic-pw", KdfCost::MINIMUM).unwrap();
+        let epochs: Vec<u32> = h3.previous_keys(&k3).unwrap().iter().map(|p| p.0).collect();
+        assert_eq!(epochs, vec![2, 1]);
+        assert!(h1.rotate(&k1, "short", KdfCost::MINIMUM).is_err());
+    }
+
+    #[test]
+    fn rotated_header_fields_are_authenticated() {
+        let (h1, k1) = VaultHeader::create(PW, KdfCost::MINIMUM).unwrap();
+        let (h2, k2) = h1.rotate(&k1, PW, KdfCost::MINIMUM).unwrap();
+        let mut t = h2.clone();
+        t.key_epoch = 3;
+        assert!(t.verify(&k2).is_err());
+        let mut t = h2.clone();
+        t.previous_keys = h1.rotate(&k1, PW, KdfCost::MINIMUM).unwrap().0.previous_keys;
+        assert!(t.verify(&k2).is_err());
+        // Downgrading to v1 or mixing fields is refused outright.
+        let mut t = h2.clone();
+        t.version = 1;
+        assert!(matches!(t.verify(&k2), Err(Error::Format(_))));
+        let mut t = h1.clone();
+        t.key_epoch = 2;
+        assert!(matches!(t.verify(&k1), Err(Error::Format(_))));
     }
 
     #[test]

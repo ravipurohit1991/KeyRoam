@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>KeyRoam</title>
+    <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <img src="../icons/icon-32.png" alt="" width="22" height="22" />
+      <h1>KeyRoam</h1>
+      <span id="host"></span>
+    </header>
+
+    <section id="save-card" class="card" hidden>
+      <p id="save-question"></p>
+      <div class="row">
+        <button id="save-no" type="button">Not now</button>
+        <button id="save-yes" type="button" class="primary">Save</button>
+      </div>
+    </section>
+
+    <section id="status" class="notice" hidden></section>
+    <ul id="logins"></ul>
+
+    <section id="generator">
+      <button id="generate" type="button">Generate a strong password</button>
+      <div id="generated-row" class="row" hidden>
+        <input id="generated" readonly spellcheck="false" aria-label="Generated password" />
+        <button id="copy-generated" type="button">Copy</button>
+        <button id="fill-generated" type="button" class="primary">Fill</button>
+      </div>
+    </section>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

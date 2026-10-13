@@ -410,6 +410,43 @@ Future<String?> showImportDialog(BuildContext context, AppController c) {
   );
 }
 
+Future<String?> showRotateKeyDialog(BuildContext context, AppController c) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _ActionDialog(
+      title: 'Replace vault key',
+      description:
+          'Creates a new encryption key for your vault. Use it if an old master password or device may be '
+          'compromised: data you save from now on cannot be read with the old key. Each of your other devices '
+          'asks for the master password once.',
+      action: 'Replace key',
+      passwordLabels: const ['Master password'],
+      run: (_, pw) async {
+        await c.rotateVaultKey(pw[0]);
+        return 'Vault key replaced';
+      },
+    ),
+  );
+}
+
+Future<String?> showAdoptKeyDialog(BuildContext context, AppController c) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _ActionDialog(
+      title: 'New vault key',
+      description:
+          'The vault key was replaced on another device. Enter your master password to switch this device '
+          'to the new key.',
+      action: 'Continue',
+      passwordLabels: const ['Master password'],
+      run: (_, pw) async {
+        await c.adoptRotatedKey(pw[0]);
+        return 'Now using the new vault key';
+      },
+    ),
+  );
+}
+
 Future<String?> showChangePasswordDialog(BuildContext context, AppController c) {
   return showDialog<String>(
     context: context,
@@ -445,20 +482,72 @@ Future<void> showDeletedDialog(BuildContext context, AppController c) async {
                     ListTile(
                       title: Text(e.title),
                       subtitle: Text('Deleted ${timeAgo(e.modifiedAt)}'),
-                      trailing: TextButton(
-                        onPressed: () async {
-                          await c.restoreEntry(e.id);
-                          if (context.mounted) Navigator.pop(context);
-                        },
-                        child: const Text('Restore'),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          TextButton(
+                            onPressed: () async {
+                              await c.restoreEntry(e.id);
+                              if (context.mounted) Navigator.pop(context);
+                            },
+                            child: const Text('Restore'),
+                          ),
+                          IconButton(
+                            tooltip: 'Delete permanently',
+                            icon: const Icon(Icons.delete_forever_outlined),
+                            onPressed: () async {
+                              if (!await _confirmPurge(context, e.title)) return;
+                              await c.purgeEntry(e.id);
+                              if (context.mounted) Navigator.pop(context);
+                            },
+                          ),
+                        ],
                       ),
                     ),
                 ],
               ),
       ),
-      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+      actions: [
+        if (deleted.isNotEmpty)
+          TextButton(
+            key: const Key('purgeAll'),
+            onPressed: () async {
+              if (!await _confirmPurge(context, null)) return;
+              await c.purgeDeleted();
+              if (context.mounted) Navigator.pop(context);
+            },
+            child: const Text('Delete all permanently'),
+          ),
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+      ],
     ),
   );
+}
+
+Future<bool> _confirmPurge(BuildContext context, String? title) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title == null ? 'Delete all permanently?' : 'Delete “$title” permanently?'),
+      content: const SizedBox(
+        width: 420,
+        child: Text(
+          'The login and its password history are erased from this device and, after syncing, '
+          'from all your devices. This cannot be undone. Encrypted backups you exported earlier '
+          'still contain it.',
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        FilledButton(
+          key: const Key('confirmPurge'),
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Delete permanently'),
+        ),
+      ],
+    ),
+  );
+  return confirmed ?? false;
 }
 
 Future<void> showSignInDialog(BuildContext context, AppController c, Widget signInStep) {
@@ -467,4 +556,201 @@ Future<void> showSignInDialog(BuildContext context, AppController c, Widget sign
     barrierDismissible: false,
     builder: (_) => AlertDialog(content: SizedBox(width: 480, child: signInStep)),
   );
+}
+
+/// Turn browser integration on or off and register KeyRoam with browsers.
+Future<void> showBrowserIntegrationDialog(BuildContext context, AppController c) {
+  return showDialog<void>(
+    context: context,
+    builder: (_) => _BrowserIntegrationDialog(controller: c),
+  );
+}
+
+class _BrowserIntegrationDialog extends StatefulWidget {
+  const _BrowserIntegrationDialog({required this.controller});
+  final AppController controller;
+
+  @override
+  State<_BrowserIntegrationDialog> createState() => _BrowserIntegrationDialogState();
+}
+
+class _BrowserIntegrationDialogState extends State<_BrowserIntegrationDialog> {
+  bool _busy = false;
+  String? _message;
+
+  AppController get _c => widget.controller;
+
+  Future<void> _run(Future<String?> Function() action) async {
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    String? message;
+    try {
+      message = await action();
+    } on KeyRoamException catch (e) {
+      message = e.message;
+    }
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _message = message;
+    });
+  }
+
+  Future<String?> _toggle(bool enabled) async {
+    await _c.setBrowserIntegration(enabled);
+    return null;
+  }
+
+  Future<String?> _register() async {
+    final browsers = await _c.installBrowserHost();
+    if (browsers.isEmpty) return 'No supported browser was found.';
+    return 'Registered with ${browsers.join(', ')}. Restart the browser if it is open.';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = _c.state?.browserIntegration ?? false;
+    return AlertDialog(
+      title: const Text('Browser integration'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SwitchListTile(
+              key: const Key('browserIntegration'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Fill passwords with the KeyRoam browser extension'),
+              subtitle: const Text(
+                'Only while KeyRoam is unlocked, only on the website a login was saved for, '
+                'and only when you choose a login.',
+              ),
+              value: enabled,
+              onChanged: _busy ? null : (v) => _run(() => _toggle(v)),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '1. Add the KeyRoam extension to Chrome, Edge, Brave, Vivaldi or Firefox.\n'
+              '2. Register KeyRoam with your browsers (once per computer):',
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              key: const Key('registerBrowsers'),
+              onPressed: _busy ? null : () => _run(_register),
+              icon: const Icon(Icons.extension_outlined),
+              label: const Text('Register with browsers'),
+            ),
+            if (_message != null) ...[const SizedBox(height: 12), SelectableText(_message!)],
+          ],
+        ),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+    );
+  }
+}
+
+/// Import logins from another browser's or password manager's CSV export.
+Future<String?> showCsvImportDialog(BuildContext context, AppController c) {
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _CsvImportDialog(controller: c),
+  );
+}
+
+class _CsvImportDialog extends StatefulWidget {
+  const _CsvImportDialog({required this.controller});
+  final AppController controller;
+
+  @override
+  State<_CsvImportDialog> createState() => _CsvImportDialogState();
+}
+
+class _CsvImportDialogState extends State<_CsvImportDialog> {
+  final _path = TextEditingController();
+  bool _delete = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _path.dispose();
+    super.dispose();
+  }
+
+  Future<void> _import() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final r = await widget.controller.importCsv(_path.text.trim(), deleteFile: _delete);
+      if (!mounted) return;
+      final parts = [
+        'Imported ${r.added} login${r.added == 1 ? '' : 's'} from ${r.format}',
+        if (r.duplicates > 0) '${r.duplicates} already in KeyRoam',
+        if (r.skipped > 0) '${r.skipped} without a username or password',
+      ];
+      final tail = r.deleted ? ' The CSV file was deleted.' : ' Delete the CSV file: it is not encrypted.';
+      Navigator.pop(context, '${parts.join(', ')}.$tail');
+    } on KeyRoamException catch (e) {
+      setState(() {
+        _busy = false;
+        _error = e.message;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Import passwords from CSV'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Export your passwords as a CSV file, then enter its path:\n'
+              '• Chrome, Edge, Brave: Settings → Passwords (Password Manager) → Export passwords\n'
+              '• Firefox: about:logins → ••• menu → Export Passwords\n'
+              '• Safari: File → Export → Passwords\n'
+              '• Bitwarden, LastPass, 1Password, KeePass: their CSV export\n\n'
+              'Logins already in KeyRoam are skipped; nothing is overwritten.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('csvPath'),
+              controller: _path,
+              decoration: const InputDecoration(
+                labelText: 'CSV file',
+                hintText: 'C:\\Users\\me\\Downloads\\passwords.csv',
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            CheckboxListTile(
+              key: const Key('csvDelete'),
+              contentPadding: EdgeInsets.zero,
+              value: _delete,
+              onChanged: (v) => setState(() => _delete = v ?? false),
+              title: const Text('Delete the CSV file after importing'),
+              subtitle: const Text('It holds your passwords unencrypted.'),
+            ),
+            if (_error != null) Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: _busy ? null : () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          key: const Key('csvImport'),
+          onPressed: _busy || _path.text.trim().isEmpty ? null : _import,
+          child: const Text('Import'),
+        ),
+      ],
+    );
+  }
 }

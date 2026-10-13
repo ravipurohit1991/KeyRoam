@@ -25,13 +25,13 @@ Google Drive), every device.
 | 2 | Google OAuth 2.0 + PKCE | ✅ Done: `keyroam-sync::oauth`, with tests |
 | 3 | Encrypted Google Drive sync | ✅ Done: `keyroam-sync::engine` / `drive`, with tests |
 | 4 | Windows and macOS desktop apps (Flutter) | ✅ Done: `app/` + `keyroam-ffi`, with tests (macOS built in CI only) |
-| 5 | Desktop browser autofill extension | ⏳ Next |
+| 5 | Desktop browser autofill extension | ✅ Done: `browser-extension/` + `keyroam-native-host`, with unit and real-browser tests |
 | 6 | Android app + Credential Manager provider | 🔨 App builds in CI (APK/AAB); sign-in & autofill pending |
 | 7 | iOS app + AutoFill Credential Provider extension | 🔨 App builds in CI (unsigned); sign-in & autofill pending |
-| 8 | Cross-device tests, security review, packaging | Planned |
+| 8 | Cross-device tests, security review, packaging | 🔨 Key rotation, permanent purge and inter-process lock done; review and packaging pending |
 
-The desktop app (`app/`) and the command-line client (`keyroam`) share the
-same Rust engine. See [ROADMAP.md](ROADMAP.md).
+The desktop app (`app/`), the browser extension and the command-line client
+(`keyroam`) share the same Rust engine. See [ROADMAP.md](ROADMAP.md).
 
 ## Repository layout
 
@@ -41,9 +41,14 @@ crates/
                   conflict-free merge, backups, local storage. No network code.
   keyroam-sync/   Google OAuth (PKCE, loopback redirect), Drive v3 appDataFolder
                   client, sync protocol, onboarding flows.
+  keyroam-autofill/  Browser autofill: public-suffix-aware site matching, the
+                  extension protocol, the authenticated app bridge.
+  keyroam-native-host/  Native-messaging host for the browser extension.
   keyroam-cli/    `keyroam` command-line client.
   keyroam-ffi/    C ABI (JSON request/response) used by the Flutter app.
-app/              Flutter desktop app (Windows, macOS). See app/README.md.
+app/              Flutter app (Windows, macOS; Android and iOS builds). See app/README.md.
+browser-extension/  Manifest V3 extension for Chromium browsers and Firefox.
+tools/            Icon generator.
 docs/
   architecture.md       Components and how the apps fit together
   security.md           Cryptographic design, threat model, limitations
@@ -63,7 +68,8 @@ each push to `main`. You can download them from the run page under
 | `KeyRoam-macos-universal` | macOS app, Apple silicon and Intel (unsigned) |
 | `KeyRoam-android` | `KeyRoam-android.apk` and `.aab` (signed with a debug key) |
 | `KeyRoam-ios-unsigned` | Unsigned `.ipa`. It needs re-signing before it can be installed |
-| `keyroam-cli-*` | Command-line client for Linux, Windows and macOS |
+| `KeyRoam-extension` | Browser extension: `KeyRoam-extension-chromium.zip` and `-firefox.zip` |
+| `keyroam-cli-*` | Command-line client and `keyroam-native-host` for Linux, Windows and macOS |
 
 Pushing a tag such as `v0.2.0` publishes the same files as a GitHub
 pre-release. To embed a Google OAuth client into the desktop apps and the
@@ -75,9 +81,13 @@ CLI, add the repository secrets `KEYROAM_GOOGLE_CLIENT_ID` and
 You need a stable Rust toolchain (<https://rustup.rs>).
 
 ```sh
-cargo test --workspace      # 85 tests: crypto, merge properties, sync, OAuth, FFI, CLI
+cargo test --workspace      # 128 tests: crypto, merge properties, sync, OAuth, autofill, import, FFI, CLI, host
 cargo build --release -p keyroam-cli
 ```
+
+The browser extension has its own tests (`cd browser-extension && npm test`)
+and a real-Chromium end-to-end test; see
+[browser-extension/README.md](browser-extension/README.md).
 
 The tests never contact Google. OAuth and Drive code is exercised against local
 HTTP stand-ins for Google's endpoints. The tests use only synthetic secrets.
@@ -91,6 +101,38 @@ flutter test                # real-engine FFI tests + UI flow tests
 ```
 
 See [app/README.md](app/README.md) for the full details.
+
+## Moving your passwords in
+
+Export your passwords as CSV from your browser or password manager, then use
+**Menu → Import passwords from CSV…** in the app (or
+`keyroam import-csv <file> --delete`). KeyRoam reads the exports of Chrome,
+Edge, Brave and other Chromium browsers, Firefox, Safari, Bitwarden, LastPass,
+1Password, KeePass and KeePassXC. Logins already in KeyRoam are skipped and
+nothing is overwritten. The CSV file is unencrypted: let KeyRoam delete it
+afterwards, and empty the trash.
+
+| Source | How to export |
+|---|---|
+| Chrome, Edge, Brave, Vivaldi | Settings → Passwords / Password Manager → Export passwords |
+| Firefox | `about:logins` → ••• → Export Passwords |
+| Safari (macOS) | File → Export → Passwords |
+| Bitwarden, LastPass, 1Password, KeePass(XC) | Their "Export → CSV" option |
+
+## Browser extension
+
+1. In the desktop app, open **Menu → Browser integration…**, turn it on and
+   click **Register with browsers**.
+2. Load the extension from the `KeyRoam-extension` download (or build it with
+   `node browser-extension/build.mjs`) in Chrome, Edge, Brave, Vivaldi or
+   Firefox.
+3. On a login page, click the KeyRoam toolbar button and pick a login, or
+   press Ctrl/⌘+Shift+L. After you sign in with a new or changed password,
+   KeyRoam offers to save it.
+
+The extension never sees the vault. It only gets the login you pick, for the
+site you are on, while the app is unlocked. See
+[browser-extension/README.md](browser-extension/README.md).
 
 ## Using the CLI
 
@@ -122,12 +164,15 @@ See [app/README.md](app/README.md) for the full details.
    keyroam show <id> [--reveal] [--history]
    keyroam edit <id> --generate
    keyroam rm <id>  /  keyroam restore <id>
+   keyroam purge <id> | --all   # erase deleted entries on every device
    keyroam conflicts  /  keyroam resolve <id> <n>
    keyroam sync       # Sync Now
    keyroam status     # sync status, no password needed
    keyroam export backup.krbackup   # independent encrypted backup
    keyroam import backup.krbackup   # merge a backup back in (never deletes data)
+   keyroam import-csv passwords.csv --delete   # import a browser's / password manager's CSV export
    keyroam passwd     # change master password on all devices
+   keyroam rotate-key # replace the vault key (other devices ask for the password once)
    keyroam generate --length 24
    ```
 

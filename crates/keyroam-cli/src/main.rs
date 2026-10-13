@@ -13,8 +13,9 @@ use keyroam_core::{
     now_millis, BackupFile, EntryData, EntryRecord, KdfCost, LocalSecrets, LocalStore, LocalVaultFile, Vault,
 };
 use keyroam_sync::{
-    authorize_installed_app, commit_local_change, create_vault, fetch_remote_header, join_vault, sync, DriveClient,
-    GoogleSession, OAuthClientConfig, SyncError, SyncReport, SyncState, SyncStatus,
+    adopt_rotated_key, authorize_installed_app, commit_local_change, create_vault, fetch_remote_header, join_vault,
+    rotate_vault_key, sync, DriveClient, GoogleSession, OAuthClientConfig, SyncError, SyncReport, SyncState,
+    SyncStatus,
 };
 use zeroize::Zeroizing;
 
@@ -111,6 +112,15 @@ enum Cmd {
     Rm { id: String },
     /// Restore a deleted entry.
     Restore { id: String },
+    /// Permanently erase a deleted entry and its history on every device.
+    Purge {
+        /// Entry id (prefix) of a deleted entry.
+        #[arg(required_unless_present = "all")]
+        id: Option<String>,
+        /// Purge every deleted entry.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+    },
     /// List entries edited concurrently on different devices.
     Conflicts,
     /// Resolve a conflict by keeping version CHOICE (see `conflicts`).
@@ -138,6 +148,17 @@ enum Cmd {
     Import { path: PathBuf },
     /// Change the master password on all devices.
     Passwd,
+    /// Import logins from a CSV export of Chrome, Edge, Firefox, Safari,
+    /// Bitwarden, LastPass, 1Password or KeePass.
+    ImportCsv {
+        file: PathBuf,
+        /// Overwrite and delete the plaintext CSV file after importing.
+        #[arg(long)]
+        delete: bool,
+    },
+    /// Replace the vault key with a fresh one (other devices ask for the
+    /// master password once).
+    RotateKey,
 }
 
 /// Reads secrets from the terminal, or from stdin lines with --password-stdin.
@@ -222,10 +243,15 @@ impl Ctx {
         }
     }
 
-    fn commit(&self, vault: &mut Vault) -> CliResult {
-        commit_local_change(vault, &self.store)?;
-        self.auto_sync(vault);
-        Ok(())
+    /// Apply `change` under the data-directory lock (merging anything the
+    /// desktop app saved meanwhile) and persist it. Call `auto_sync` after.
+    fn commit<T>(
+        &self,
+        vault: &mut Vault,
+        backup_previous: bool,
+        change: impl FnOnce(&mut Vault) -> keyroam_core::Result<T>,
+    ) -> CliResult<T> {
+        Ok(commit_local_change(vault, &self.store, backup_previous, change)?)
     }
 }
 
@@ -488,10 +514,49 @@ fn run(cli: Cli) -> CliResult {
             }
         }
         Cmd::Sync => {
-            let (mut vault, _pw) = ctx.unlock()?;
+            let (mut vault, pw) = ctx.unlock()?;
             let drive = ctx.drive(&vault)?;
-            let r = sync(&mut vault, &ctx.store, &drive)?;
+            let r = match sync(&mut vault, &ctx.store, &drive) {
+                Err(SyncError::Core(keyroam_core::Error::KeyRotated)) => {
+                    println!("The vault key was replaced on another device; switching to the new key.");
+                    match adopt_rotated_key(&mut vault, &ctx.store, &drive, &pw) {
+                        Err(SyncError::Core(keyroam_core::Error::WrongPassword)) => {
+                            let current = ctx.prompt.secret("Master password set on the other device: ")?;
+                            adopt_rotated_key(&mut vault, &ctx.store, &drive, &current)?;
+                        }
+                        r => r?,
+                    }
+                    sync(&mut vault, &ctx.store, &drive)?
+                }
+                r => r?,
+            };
             report_sync(&r, false);
+        }
+        Cmd::ImportCsv { file, delete } => {
+            let bytes = Zeroizing::new(std::fs::read(&file)?);
+            let parsed = keyroam_core::import::parse_csv(&bytes)?;
+            let (mut vault, _pw) = ctx.unlock()?;
+            let s = ctx.commit(&mut vault, true, |v| v.import_logins(&parsed.logins))?;
+            println!(
+                "Imported {} login(s) from {} ({} already in KeyRoam, {} without a username or password).",
+                s.added, parsed.format, s.duplicates, parsed.skipped
+            );
+            if delete {
+                keyroam_core::import::remove_plaintext_file(&file)?;
+                println!("Deleted {}.", file.display());
+            } else {
+                println!(
+                    "{} holds your passwords unencrypted: delete it (or rerun with --delete).",
+                    file.display()
+                );
+            }
+            ctx.auto_sync(&mut vault);
+        }
+        Cmd::RotateKey => {
+            let (mut vault, pw) = ctx.unlock()?;
+            rotate_vault_key(&mut vault, &ctx.store, &pw, KdfCost::DEFAULT)?;
+            println!("Vault key replaced. Your other devices will ask for the master password once.");
+            ctx.auto_sync(&mut vault);
         }
         Cmd::List { search, deleted } => {
             let (mut vault, _pw) = ctx.unlock()?;
@@ -554,7 +619,7 @@ fn run(cli: Cli) -> CliResult {
                     p
                 }
             };
-            let id = vault.add_entry(EntryData {
+            let data = EntryData {
                 title,
                 username,
                 password: password.to_string(),
@@ -562,9 +627,11 @@ fn run(cli: Cli) -> CliResult {
                 notes,
                 tags,
                 favorite: false,
-            })?;
+            };
+            data.validate()?;
+            let id = ctx.commit(&mut vault, false, |v| v.add_entry(data))?;
             println!("Added {}", short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Edit {
             id,
@@ -602,23 +669,38 @@ fn run(cli: Cli) -> CliResult {
             } else if password {
                 data.password = ctx.prompt.secret("New entry password: ")?.to_string();
             }
-            vault.update_entry(id, data)?;
+            ctx.commit(&mut vault, false, |v| v.update_entry(id, data))?;
             println!("Updated {}", short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Rm { id } => {
             let (mut vault, _pw) = ctx.unlock()?;
             let id = vault.resolve_id(&id)?;
-            vault.delete_entry(id)?;
+            ctx.commit(&mut vault, false, |v| v.delete_entry(id))?;
             println!("Deleted {} (restore with `keyroam restore {}`)", short(&id), short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
+        }
+        Cmd::Purge { id, all } => {
+            let (mut vault, _pw) = ctx.unlock()?;
+            let purged = match id {
+                Some(id) if !all => {
+                    let id = vault.resolve_id(&id)?;
+                    ctx.commit(&mut vault, false, |v| v.purge_entry(id).map(|_| 1))?
+                }
+                _ => ctx.commit(&mut vault, false, |v| v.purge_deleted())?,
+            };
+            println!(
+                "Permanently erased {purged} deleted entr{}.",
+                if purged == 1 { "y" } else { "ies" }
+            );
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Restore { id } => {
             let (mut vault, _pw) = ctx.unlock()?;
             let id = vault.resolve_id(&id)?;
-            vault.restore_entry(id)?;
+            ctx.commit(&mut vault, false, |v| v.restore_entry(id))?;
             println!("Restored {}", short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Conflicts => {
             let (mut vault, _pw) = ctx.unlock()?;
@@ -650,12 +732,12 @@ fn run(cli: Cli) -> CliResult {
         Cmd::Resolve { id, choice } => {
             let (mut vault, _pw) = ctx.unlock()?;
             let id = vault.resolve_id(&id)?;
-            vault.resolve_conflict(id, choice)?;
+            ctx.commit(&mut vault, false, |v| v.resolve_conflict(id, choice))?;
             println!(
                 "Resolved {}; the other versions remain in the entry history.",
                 short(&id)
             );
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Generate {
             length,
@@ -701,7 +783,7 @@ fn run(cli: Cli) -> CliResult {
                 return Err(format!("{} is not a KeyRoam backup", path.display()).into());
             };
             let before = vault.entries().count();
-            let changed = vault.merge_state(&state)?;
+            let changed = ctx.commit(&mut vault, true, |v| v.merge_state(&state))?;
             println!(
                 "Merged backup: {} entries before, {} after{}.",
                 before,
@@ -709,17 +791,17 @@ fn run(cli: Cli) -> CliResult {
                 if changed { "" } else { " (nothing new)" }
             );
             if changed {
-                ctx.store.save_vault(&vault.to_local_file()?, true)?;
-                ctx.commit(&mut vault)?;
+                ctx.auto_sync(&mut vault);
             }
         }
         Cmd::Passwd => {
             let (mut vault, current) = ctx.unlock()?;
             let new = ctx.prompt.new_password("New master password")?;
-            vault.change_password(&current, &new, KdfCost::DEFAULT)?;
-            ctx.store.save_vault(&vault.to_local_file()?, true)?;
+            ctx.commit(&mut vault, true, |v| {
+                v.change_password(&current, &new, KdfCost::DEFAULT)
+            })?;
             println!("Master password changed. Other devices will ask for the new password after they sync.");
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
     }
     Ok(())

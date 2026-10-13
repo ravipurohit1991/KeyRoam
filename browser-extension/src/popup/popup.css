@@ -1,0 +1,96 @@
+body {
+  margin: 0;
+  width: 340px;
+  background: var(--surface);
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+h1 {
+  font-size: 15px;
+  margin: 0;
+}
+#host {
+  margin-left: auto;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
+section,
+ul {
+  margin: 10px 14px;
+}
+.card,
+.notice {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.notice {
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+.notice button {
+  margin-top: 8px;
+}
+.card p {
+  margin: 0 0 8px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+ul {
+  list-style: none;
+  padding: 0;
+}
+li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+li.empty {
+  color: var(--muted);
+  border: 0;
+}
+.who {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.who span,
+.who strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.who span {
+  color: var(--muted);
+}
+#generator {
+  margin-bottom: 14px;
+}
+#generated-row {
+  margin-top: 8px;
+}
+#generated {
+  flex: 1;
+  min-width: 0;
+  font: 12px ui-monospace, Menlo, Consolas, monospace;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}

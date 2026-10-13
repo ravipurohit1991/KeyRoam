@@ -45,12 +45,35 @@ abstract class KeyRoamApi {
   Future<void> updateEntry(String id, EntryData data);
   Future<void> deleteEntry(String id);
   Future<void> restoreEntry(String id);
+
+  /// Permanently erase a deleted entry on every device.
+  Future<void> purgeEntry(String id);
+
+  /// Permanently erase all deleted entries. Returns how many.
+  Future<int> purgeDeleted();
   Future<void> resolveConflict(String id, int choice);
 
   Future<SyncResult> sync();
   Future<int> exportBackup(String path, String password, {bool overwrite = false});
   Future<ImportResult> importBackup(String path, String password);
+
+  /// Import logins from a CSV export (Chrome, Edge, Firefox, Safari,
+  /// Bitwarden, LastPass, 1Password, KeePass).
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false});
   Future<void> changePassword(String current, String newPassword);
+
+  /// Replace the vault key with a fresh one (see docs/security.md).
+  Future<AppState> rotateVaultKey(String password);
+
+  /// Adopt a vault key replaced on another device, then sync.
+  Future<OnboardingResult> adoptRotatedKey(String password);
+
+  // Browser integration (desktop).
+  Future<AppState> setBrowserIntegration(bool enabled);
+
+  /// Register the native-messaging helper at [hostPath] with the user's
+  /// browsers. Returns the browsers it was registered with.
+  Future<List<String>> installBrowserHost(String hostPath);
 }
 
 /// [KeyRoamApi] backed by the Rust engine. Every call runs on a short-lived
@@ -129,6 +152,10 @@ class NativeKeyRoamApi implements KeyRoamApi {
   @override
   Future<void> restoreEntry(String id) => _call('restore_entry', {'id': id});
   @override
+  Future<void> purgeEntry(String id) => _call('purge_entry', {'id': id});
+  @override
+  Future<int> purgeDeleted() async => (await _call('purge_deleted') as Map<String, dynamic>)['purged'] as int;
+  @override
   Future<void> resolveConflict(String id, int choice) => _call('resolve_conflict', {'id': id, 'choice': choice});
 
   @override
@@ -153,6 +180,25 @@ class NativeKeyRoamApi implements KeyRoamApi {
   }
 
   @override
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false}) async => CsvImportResult.fromJson(
+    await _call('import_csv', {'path': path, 'delete_file': deleteFile}) as Map<String, dynamic>,
+  );
+
+  @override
   Future<void> changePassword(String current, String newPassword) =>
       _call('change_password', {'current': current, 'new': newPassword});
+
+  @override
+  Future<AppState> rotateVaultKey(String password) => _state('rotate_vault_key', {'password': password});
+
+  @override
+  Future<OnboardingResult> adoptRotatedKey(String password) async =>
+      OnboardingResult.fromJson(await _call('adopt_rotated_key', {'password': password}) as Map<String, dynamic>);
+
+  @override
+  Future<AppState> setBrowserIntegration(bool enabled) => _state('set_browser_integration', {'enabled': enabled});
+
+  @override
+  Future<List<String>> installBrowserHost(String hostPath) async =>
+      (await _call('install_browser_host', {'host_path': hostPath}) as List).cast<String>();
 }

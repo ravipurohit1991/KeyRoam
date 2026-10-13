@@ -3,6 +3,11 @@
 //!
 //! Writes are atomic (temp file + rename) so a crash never leaves a truncated
 //! vault behind.
+//!
+//! Several KeyRoam processes (the desktop app, the CLI) may share one data
+//! directory. Every read-modify-write of the vault runs under an advisory
+//! lock on [`LOCK_FILE`], first merging whatever another process saved (see
+//! [`LocalStore::absorb`]), so no process can overwrite another's edit.
 
 use std::fs;
 use std::io::Write;
@@ -15,11 +20,19 @@ use crate::crypto::random_bytes;
 use crate::error::{Error, Result};
 use crate::files::{LocalVaultFile, SecretsFile};
 use crate::now_millis;
+use crate::vault::Vault;
 
 pub const VAULT_FILE: &str = "vault.krv";
 pub const SECRETS_FILE: &str = "secrets.krs";
 pub const BACKUP_DIR: &str = "backups";
 pub const LOCAL_BACKUP_LIMIT: usize = 10;
+pub const LOCK_FILE: &str = ".keyroam.lock";
+
+/// Exclusive advisory lock on a data directory, released on drop.
+#[derive(Debug)]
+pub struct StoreLock {
+    _file: fs::File,
+}
 
 #[derive(Clone, Debug)]
 pub struct LocalStore {
@@ -51,8 +64,36 @@ impl LocalStore {
         }
     }
 
+    /// Take the data directory's exclusive lock, waiting for other KeyRoam
+    /// processes to release it. Hold it only for local file work, never
+    /// across network calls or user prompts.
+    pub fn lock(&self) -> Result<StoreLock> {
+        fs::create_dir_all(&self.root)?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.path(LOCK_FILE))?;
+        file.lock()?;
+        Ok(StoreLock { _file: file })
+    }
+
+    /// Merge into `vault` whatever another process sharing this data directory
+    /// has saved since `vault` was loaded (including a newer header after a
+    /// master-password change). The caller should hold [`LocalStore::lock`].
+    /// Returns true if `vault` changed.
+    pub fn absorb(&self, vault: &mut Vault) -> Result<bool> {
+        match self.load_vault() {
+            Ok(file) => vault.absorb_local(&file),
+            Err(Error::NoVault) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Persist a newly created/joined vault. Refuses to replace an existing one.
     pub fn save_new_vault(&self, file: &LocalVaultFile) -> Result<()> {
+        let _lock = self.lock()?;
         if self.has_vault() {
             return Err(Error::VaultExists);
         }
@@ -133,6 +174,7 @@ impl LocalStore {
         self.write_atomic(name, &serde_json::to_vec_pretty(value)?)
     }
 
+    /// Write a file in the data directory atomically (temp file + rename).
     pub fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<()> {
         fs::create_dir_all(&self.root)?;
         let target = self.path(name);
@@ -205,6 +247,90 @@ mod tests {
             .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(stray, 0);
+    }
+
+    #[test]
+    fn concurrent_processes_never_lose_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::new(dir.path());
+        let mut first = Vault::create(PW, KdfCost::MINIMUM).unwrap();
+        let shared = first
+            .add_entry(EntryData {
+                title: "shared".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store.save_new_vault(&first.to_local_file().unwrap()).unwrap();
+        // A second process opens the same data directory.
+        let mut second = Vault::open(&store.load_vault().unwrap(), PW).unwrap();
+
+        {
+            let _lock = store.lock().unwrap();
+            assert!(!store.absorb(&mut first).unwrap());
+            first
+                .add_entry(EntryData {
+                    title: "from-first".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            store.save_vault(&first.to_local_file().unwrap(), false).unwrap();
+        }
+        {
+            let _lock = store.lock().unwrap();
+            assert!(store.absorb(&mut second).unwrap());
+            let mut data = second.get(shared).unwrap().current().data.clone().unwrap();
+            data.password = "edited-by-second".into();
+            second.update_entry(shared, data).unwrap();
+            store.save_vault(&second.to_local_file().unwrap(), false).unwrap();
+        }
+
+        let on_disk = Vault::open(&store.load_vault().unwrap(), PW).unwrap();
+        let titles: Vec<_> = on_disk
+            .entries()
+            .map(|r| r.current().data.as_ref().unwrap().title.clone())
+            .collect();
+        assert_eq!(titles.len(), 2);
+        assert!(titles.contains(&"from-first".to_string()));
+        // The second process saw the first one's state before editing, so the
+        // edit supersedes cleanly instead of producing a same-device conflict.
+        assert_eq!(on_disk.conflicts().count(), 0);
+        assert_eq!(
+            on_disk.get(shared).unwrap().current().data.as_ref().unwrap().password,
+            "edited-by-second"
+        );
+
+        // A password change made by one process is adopted by the other.
+        {
+            let _lock = store.lock().unwrap();
+            store.absorb(&mut first).unwrap();
+            first
+                .change_password(PW, "new-synthetic-pw-2", KdfCost::MINIMUM)
+                .unwrap();
+            store.save_vault(&first.to_local_file().unwrap(), false).unwrap();
+        }
+        store.absorb(&mut second).unwrap();
+        assert!(second.verify_password("new-synthetic-pw-2"));
+
+        // Another vault's file is never merged.
+        let other = Vault::create(PW, KdfCost::MINIMUM).unwrap();
+        assert!(matches!(
+            second.absorb_local(&other.to_local_file().unwrap()),
+            Err(Error::VaultMismatch)
+        ));
+    }
+
+    #[test]
+    fn lock_is_exclusive_across_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::new(dir.path());
+        let held = store.lock().unwrap();
+        let probe = fs::OpenOptions::new()
+            .write(true)
+            .open(dir.path().join(LOCK_FILE))
+            .unwrap();
+        assert!(probe.try_lock().is_err());
+        drop(held);
+        assert!(probe.try_lock().is_ok());
     }
 
     #[test]

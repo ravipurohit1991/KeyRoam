@@ -1,5 +1,8 @@
 #include "flutter_window.h"
 
+#include <flutter/standard_method_codec.h>
+#include <wtsapi32.h>
+
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
@@ -25,6 +28,12 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  system_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "keyroam/system",
+          &flutter::StandardMethodCodec::GetInstance());
+  // Receive WM_WTSSESSION_CHANGE when the session is locked.
+  WTSRegisterSessionNotification(GetHandle(), NOTIFY_FOR_THIS_SESSION);
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -40,6 +49,8 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  WTSUnRegisterSessionNotification(GetHandle());
+  system_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -65,7 +76,23 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
+    case WM_WTSSESSION_CHANGE:
+      if (wparam == static_cast<WPARAM>(WTS_SESSION_LOCK)) {
+        LockVault();
+      }
+      break;
+    case WM_POWERBROADCAST:
+      if (wparam == static_cast<WPARAM>(PBT_APMSUSPEND)) {
+        LockVault();
+      }
+      break;
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
+}
+
+void FlutterWindow::LockVault() {
+  if (system_channel_) {
+    system_channel_->InvokeMethod("lock", nullptr);
+  }
 }

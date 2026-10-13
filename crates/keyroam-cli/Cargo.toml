@@ -3,6 +3,7 @@ name = "keyroam-cli"
 description = "KeyRoam command-line client (reference front-end for the vault and sync engine)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]

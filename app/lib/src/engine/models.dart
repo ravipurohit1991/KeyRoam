@@ -30,6 +30,8 @@ class AppState {
     this.entryCount = 0,
     this.conflicts = 0,
     this.sync = const SyncInfo(status: 'never'),
+    this.browserIntegration = false,
+    this.revision = 0,
   });
 
   final String? dataDir;
@@ -43,6 +45,12 @@ class AppState {
   final int conflicts;
   final SyncInfo sync;
 
+  /// Browser integration is on: the KeyRoam extension can reach this app.
+  final bool browserIntegration;
+
+  /// Changes whenever the browser extension modified the vault.
+  final int revision;
+
   factory AppState.fromJson(Map<String, dynamic> j) => AppState(
     dataDir: j['data_dir'] as String?,
     hasVault: j['has_vault'] as bool,
@@ -54,6 +62,8 @@ class AppState {
     entryCount: j['entry_count'] as int? ?? 0,
     conflicts: j['conflicts'] as int? ?? 0,
     sync: SyncInfo.fromJson(j['sync'] as Map<String, dynamic>),
+    browserIntegration: j['browser_integration'] as bool? ?? false,
+    revision: j['revision'] as int? ?? 0,
   );
 }
 
@@ -240,6 +250,33 @@ class OnboardingResult {
       syncError: sync['error'] as String?,
     );
   }
+}
+
+/// Outcome of importing a CSV export of another password manager.
+class CsvImportResult {
+  const CsvImportResult({
+    required this.format,
+    required this.added,
+    required this.duplicates,
+    required this.skipped,
+    required this.deleted,
+  });
+
+  /// Detected source: Chrome, Firefox, Safari, Bitwarden, LastPass,
+  /// 1Password, KeePass or CSV.
+  final String format;
+  final int added;
+  final int duplicates;
+  final int skipped;
+  final bool deleted;
+
+  factory CsvImportResult.fromJson(Map<String, dynamic> j) => CsvImportResult(
+    format: j['format'] as String,
+    added: j['added'] as int,
+    duplicates: j['duplicates'] as int,
+    skipped: j['skipped'] as int,
+    deleted: j['deleted'] as bool,
+  );
 }
 
 class SignInStart {

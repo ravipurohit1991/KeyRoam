@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:keyroam/src/app/controller.dart';
+import 'package:keyroam/src/app/platform_paths.dart';
 import 'package:keyroam/src/engine/models.dart';
 import 'package:keyroam/src/ui/app.dart';
 
@@ -218,6 +220,128 @@ void main() {
     await finish(tester, c);
   });
 
+  testWidgets('import passwords from a browser CSV export', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Import passwords from CSV…'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<FilledButton>(find.byKey(const Key('csvImport'))).onPressed, isNull);
+    await tester.enterText(find.byKey(const Key('csvPath')), 'notes.txt');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('csvImport')));
+    await tester.pumpAndSettle();
+    expect(find.text('no password column found'), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('csvPath')), '/home/me/Chrome Passwords.csv');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('csvImport')));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('importCsv:/home/me/Chrome Passwords.csv:true'));
+    expect(find.textContaining('Imported 1 login from Chrome, 2 already in KeyRoam'), findsOneWidget);
+    expect(find.text('imported.example'), findsWidgets);
+    await finish(tester, c);
+  });
+
+  testWidgets('recently deleted: restore or delete permanently', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final keep = api.seed(const EntryData(title: 'Keep me'));
+    final gone = api.seed(const EntryData(title: 'Erase me'));
+    await api.deleteEntry(keep);
+    await api.deleteEntry(gone);
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    Future<void> openDeleted() async {
+      await tester.tap(find.byKey(const Key('menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Recently deleted'));
+      await tester.pumpAndSettle();
+    }
+
+    await openDeleted();
+    final eraseRow = find.ancestor(of: find.text('Erase me'), matching: find.byType(ListTile));
+    await tester.tap(find.descendant(of: eraseRow, matching: find.byTooltip('Delete permanently')));
+    await tester.pumpAndSettle();
+    expect(find.text('Delete “Erase me” permanently?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(api.calls.where((c) => c.startsWith('purge')), isEmpty);
+    await tester.tap(find.descendant(of: eraseRow, matching: find.byTooltip('Delete permanently')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('confirmPurge')));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('purge:$gone'));
+    expect(find.text('Deleted permanently'), findsOneWidget);
+
+    await openDeleted();
+    expect(find.text('Erase me'), findsNothing);
+    await tester.tap(find.text('Restore'));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep me'), findsWidgets);
+    await finish(tester, c);
+  });
+
+  testWidgets('vault key: replace it here, adopt one replaced elsewhere', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true)..signedIn = true;
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Replace vault key…'));
+    await tester.pumpAndSettle();
+    final field = find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextField));
+    await tester.enterText(field.first, pw);
+    await tester.tap(find.text('Replace key'));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('rotateVaultKey'));
+
+    // Another device replaced the key: sync stops and asks for the password.
+    api.remoteKeyRotated = true;
+    await tester.tap(find.byKey(const Key('syncNow')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('adoptKey')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('adoptKey')));
+    await tester.pumpAndSettle();
+    await tester.enterText(field.first, pw);
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('adoptRotatedKey'));
+    expect(find.byKey(const Key('adoptKey')), findsNothing);
+    await finish(tester, c);
+  });
+
+  testWidgets('locks when the operating system locks or sleeps', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = await start(tester, api);
+    PlatformPaths.onSystemLock(c.lockForSystem);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+    expect(api.unlocked, isTrue);
+
+    // What the Windows and macOS runners send.
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'keyroam/system',
+      const StandardMethodCodec().encodeMethodCall(const MethodCall('lock')),
+      (_) {},
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Your vault is locked'), findsOneWidget);
+    expect(api.unlocked, isFalse);
+    await finish(tester, c);
+  });
+
   testWidgets('export backup dialog requires matching passwords', (tester) async {
     final api = FakeKeyRoamApi(hasVault: true);
     final c = await start(tester, api);
@@ -239,6 +363,38 @@ void main() {
     await tester.pumpAndSettle();
     expect(api.calls, contains('export:backup.krbackup'));
     expect(find.textContaining('Exported 0 entries'), findsOneWidget);
+    await finish(tester, c);
+  });
+
+  testWidgets('browser integration: enable, register, and show logins saved by the extension', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Browser integration…'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('browserIntegration'))).value, isFalse);
+    await tester.tap(find.byKey(const Key('browserIntegration')));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('browserIntegration:true'));
+    expect(tester.widget<SwitchListTile>(find.byKey(const Key('browserIntegration'))).value, isTrue);
+
+    await tester.tap(find.byKey(const Key('registerBrowsers')));
+    await tester.pumpAndSettle();
+    expect(api.installedHost, contains('keyroam-native-host'));
+    expect(find.textContaining('Registered with Google Chrome, Firefox'), findsOneWidget);
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    // A login saved from the browser shows up without user action.
+    api.saveFromBrowser(const EntryData(title: 'example.com', username: 'from-browser@example.test'));
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pumpAndSettle();
+    expect(find.text('example.com'), findsWidgets);
     await finish(tester, c);
   });
 

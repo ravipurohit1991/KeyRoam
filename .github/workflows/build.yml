@@ -47,6 +47,11 @@ jobs:
       - name: Build
         working-directory: app
         run: flutter build windows --release
+      - name: Bundle the browser helper
+        shell: bash
+        run: |
+          cargo build --release --locked -p keyroam-native-host
+          cp target/release/keyroam-native-host.exe app/build/windows/x64/runner/Release/
       - name: Package
         shell: pwsh
         run: Compress-Archive -Path app/build/windows/x64/runner/Release/* -DestinationPath KeyRoam-windows-x64.zip
@@ -76,6 +81,18 @@ jobs:
       - name: Build
         working-directory: app
         run: flutter build macos --release
+      - name: Bundle the browser helper
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p keyroam-native-host --target "$t"
+          done
+          app=app/build/macos/Build/Products/Release/KeyRoam.app
+          lipo -create -output "$app/Contents/MacOS/keyroam-native-host" \
+            target/aarch64-apple-darwin/release/keyroam-native-host \
+            target/x86_64-apple-darwin/release/keyroam-native-host
+          # Adding a file breaks the bundle's ad-hoc signature; sign again.
+          codesign --force --sign - "$app/Contents/MacOS/keyroam-native-host"
+          codesign --force --sign - --entitlements app/macos/Runner/Release.entitlements "$app"
       - name: Package
         run: ditto -c -k --sequesterRsrc --keepParent app/build/macos/Build/Products/Release/KeyRoam.app KeyRoam-macos-universal.zip
       - uses: actions/upload-artifact@v4
@@ -147,6 +164,28 @@ jobs:
           path: KeyRoam-ios-unsigned.ipa
           if-no-files-found: error
 
+  extension:
+    name: Browser extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build and package
+        working-directory: browser-extension
+        run: |
+          node build.mjs
+          (cd dist/chromium && zip -qr ../../../KeyRoam-extension-chromium.zip .)
+          (cd dist/firefox && zip -qr ../../../KeyRoam-extension-firefox.zip .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KeyRoam-extension
+          path: |
+            KeyRoam-extension-chromium.zip
+            KeyRoam-extension-firefox.zip
+          if-no-files-found: error
+
   cli:
     name: CLI (${{ matrix.name }})
     strategy:
@@ -155,30 +194,32 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x64
-            bin: keyroam
+            ext: ""
           - os: windows-latest
             name: windows-x64
-            bin: keyroam.exe
+            ext: .exe
           - os: macos-latest
             name: macos-arm64
-            bin: keyroam
+            ext: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release --locked -p keyroam-cli
+        run: cargo build --release --locked -p keyroam-cli -p keyroam-native-host
       - uses: actions/upload-artifact@v4
         with:
           name: keyroam-cli-${{ matrix.name }}
-          path: target/release/${{ matrix.bin }}
+          path: |
+            target/release/keyroam${{ matrix.ext }}
+            target/release/keyroam-native-host${{ matrix.ext }}
           if-no-files-found: error
 
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos, android, ios, cli]
+    needs: [windows, macos, android, ios, extension, cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -192,13 +233,15 @@ jobs:
           # Apps: each artifact folder already holds its final file(s).
           cp dist/KeyRoam-*/* release/
           # CLI: Windows as .exe, Linux/macOS as .tar.gz (keeps the executable bit).
+          # The CLI artifacts also hold keyroam-native-host (browser extension helper).
           for d in dist/keyroam-cli-*; do
             platform=${d#dist/keyroam-cli-}
             if [ -f "$d/keyroam.exe" ]; then
               cp "$d/keyroam.exe" "release/keyroam-cli-$platform.exe"
+              cp "$d/keyroam-native-host.exe" "release/keyroam-native-host-$platform.exe"
             else
-              chmod +x "$d/keyroam"
-              tar -czf "release/keyroam-cli-$platform.tar.gz" -C "$d" keyroam
+              chmod +x "$d/keyroam" "$d/keyroam-native-host"
+              tar -czf "release/keyroam-cli-$platform.tar.gz" -C "$d" keyroam keyroam-native-host
             fi
           done
           (cd release && sha256sum * > SHA256SUMS.txt)

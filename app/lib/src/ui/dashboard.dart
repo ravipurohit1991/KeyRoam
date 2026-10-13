@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app/controller.dart';
+import '../app/platform_paths.dart';
 import '../engine/models.dart';
 import 'common.dart';
 import 'dialogs.dart';
@@ -22,10 +23,18 @@ class Dashboard extends StatelessWidget {
         message = await showExportDialog(context, controller);
       case 'import':
         message = await showImportDialog(context, controller);
+      case 'importCsv':
+        message = await showCsvImportDialog(context, controller);
       case 'password':
         message = await showChangePasswordDialog(context, controller);
+      case 'rotate':
+        message = await showRotateKeyDialog(context, controller);
+      case 'adoptKey':
+        message = await showAdoptKeyDialog(context, controller);
       case 'deleted':
         await showDeletedDialog(context, controller);
+      case 'browser':
+        await showBrowserIntegrationDialog(context, controller);
       case 'signin':
         await showSignInDialog(
           context,
@@ -56,6 +65,24 @@ class Dashboard extends StatelessWidget {
     final state = controller.state!;
     return Scaffold(
       appBar: AppBar(
+        bottom: controller.keyRotated
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(48),
+                child: Material(
+                  color: Theme.of(context).colorScheme.tertiaryContainer,
+                  child: ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.key),
+                    title: const Text('The vault key was replaced on another device.'),
+                    trailing: TextButton(
+                      key: const Key('adoptKey'),
+                      onPressed: () => _menu(context, 'adoptKey'),
+                      child: const Text('Enter master password'),
+                    ),
+                  ),
+                ),
+              )
+            : null,
         title: const Row(
           children: [
             Icon(Icons.key_rounded),
@@ -82,7 +109,10 @@ class Dashboard extends StatelessWidget {
               const PopupMenuItem(value: 'deleted', child: Text('Recently deleted')),
               const PopupMenuItem(value: 'export', child: Text('Export encrypted backup…')),
               const PopupMenuItem(value: 'import', child: Text('Restore from backup…')),
+              const PopupMenuItem(value: 'importCsv', child: Text('Import passwords from CSV…')),
               const PopupMenuItem(value: 'password', child: Text('Change master password…')),
+              const PopupMenuItem(value: 'rotate', child: Text('Replace vault key…')),
+              if (PlatformPaths.isDesktop) const PopupMenuItem(value: 'browser', child: Text('Browser integration…')),
               const PopupMenuDivider(),
               if (state.signedIn)
                 const PopupMenuItem(value: 'signout', child: Text('Sign out of Google on this device'))

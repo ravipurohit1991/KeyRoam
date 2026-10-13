@@ -68,6 +68,11 @@ pub struct SyncState {
     /// Drive file id → last merged version, to skip unchanged replicas.
     #[serde(default)]
     pub seen_versions: BTreeMap<String, String>,
+    /// Incremented by every local commit. A sync round that started at an
+    /// older generation knows another process committed meanwhile and keeps
+    /// `pending_upload` set.
+    #[serde(default)]
+    pub local_generation: u64,
 }
 
 impl SyncState {
@@ -153,11 +158,72 @@ pub struct SyncReport {
     pub warnings: Vec<String>,
 }
 
-/// Record a local modification: persist the vault and mark it for upload.
-pub fn commit_local_change(vault: &Vault, store: &LocalStore) -> Result<()> {
-    store.save_vault(&vault.to_local_file()?, false)?;
+/// Make a local modification: under the data-directory lock, merge whatever
+/// another KeyRoam process saved, apply `change`, persist the vault and mark
+/// it for upload. With `backup_previous`, the previous vault file is kept in
+/// the rotating local backups (used for imports and password changes).
+pub fn commit_local_change<T>(
+    vault: &mut Vault,
+    store: &LocalStore,
+    backup_previous: bool,
+    change: impl FnOnce(&mut Vault) -> keyroam_core::Result<T>,
+) -> Result<T> {
+    let _lock = store.lock()?;
+    store.absorb(vault)?;
+    let out = change(vault)?;
+    store.save_vault(&vault.to_local_file()?, backup_previous)?;
     let mut st = SyncState::for_vault(store, vault)?;
     st.pending_upload = true;
+    st.local_generation += 1;
+    st.save(store)?;
+    Ok(out)
+}
+
+/// Replace the vault key (see [`Vault::rotate_key`]): re-encrypt the local
+/// vault and device secrets with the new key and queue the upload of the new
+/// header and replica. Call [`sync`] afterwards.
+pub fn rotate_vault_key(
+    vault: &mut Vault,
+    store: &LocalStore,
+    password: &str,
+    cost: keyroam_core::KdfCost,
+) -> Result<()> {
+    rekey(vault, store, |v| v.rotate_key(password, cost))
+}
+
+/// Adopt a vault key rotated on another device (after [`sync`] failed with
+/// `KeyRotated`), using the master password, then re-encrypt local files.
+/// Call [`sync`] afterwards.
+pub fn adopt_rotated_key(
+    vault: &mut Vault,
+    store: &LocalStore,
+    remote: &dyn RemoteStore,
+    password: &str,
+) -> Result<()> {
+    let header = fetch_remote_header(remote)?;
+    rekey(vault, store, |v| v.adopt_rotated_header(&header, password))
+}
+
+fn rekey(
+    vault: &mut Vault,
+    store: &LocalStore,
+    change: impl FnOnce(&mut Vault) -> keyroam_core::Result<()>,
+) -> Result<()> {
+    let _lock = store.lock()?;
+    let secrets = match store.load_secrets()? {
+        Some(f) => Some(vault.open_secrets(&f)?),
+        None => None,
+    };
+    change(vault)?;
+    // Another process may have saved under the old key meanwhile.
+    store.absorb(vault)?;
+    store.save_vault(&vault.to_local_file()?, true)?;
+    if let Some(s) = secrets {
+        store.save_secrets(&vault.seal_secrets(&s)?)?;
+    }
+    let mut st = SyncState::for_vault(store, vault)?;
+    st.pending_upload = true;
+    st.local_generation += 1;
     st.save(store)
 }
 
@@ -165,7 +231,11 @@ pub fn commit_local_change(vault: &Vault, store: &LocalStore) -> Result<()> {
 /// untouched apart from merges already saved, and the error is recorded in
 /// the sync state for display.
 pub fn sync(vault: &mut Vault, store: &LocalStore, remote: &dyn RemoteStore) -> Result<SyncReport> {
-    let mut st = SyncState::for_vault(store, vault)?;
+    let mut st = {
+        let _lock = store.lock()?;
+        store.absorb(vault)?;
+        SyncState::for_vault(store, vault)?
+    };
     st.last_attempt_at = Some(now_millis());
     let result = sync_inner(vault, store, remote, &mut st);
     match &result {
@@ -179,7 +249,17 @@ pub fn sync(vault: &mut Vault, store: &LocalStore, remote: &dyn RemoteStore) -> 
             st.last_error_offline = e.is_offline();
         }
     }
-    st.save(store)?;
+    {
+        let _lock = store.lock()?;
+        let on_disk = SyncState::load(store)?;
+        if on_disk.vault_id == st.vault_id && on_disk.local_generation != st.local_generation {
+            // Another process committed during this round; its change may not
+            // be in the replica just uploaded.
+            st.pending_upload = true;
+            st.local_generation = on_disk.local_generation;
+        }
+        st.save(store)?;
+    }
     let mut report = result?;
     report.conflicts = vault.state().conflict_count();
     Ok(report)
@@ -255,7 +335,12 @@ fn sync_inner(
                 }
                 st.seen_versions.insert(f.id.clone(), f.version.clone());
             }
-            Err(SyncError::Core(e)) if !matches!(e, keyroam_core::Error::UnsupportedVersion { .. }) => {
+            Err(SyncError::Core(e))
+                if !matches!(
+                    e,
+                    keyroam_core::Error::UnsupportedVersion { .. } | keyroam_core::Error::KeyRotated
+                ) =>
+            {
                 report.warnings.push(format!("skipped replica {}: {e}", f.name));
             }
             Err(e) => return Err(e),
@@ -266,6 +351,8 @@ fn sync_inner(
 
     // 3. Persist merged state locally before touching the remote copy.
     if save_needed {
+        let _lock = store.lock()?;
+        store.absorb(vault)?;
         store.save_vault(&vault.to_local_file()?, true)?;
     }
     if report.local_changed {

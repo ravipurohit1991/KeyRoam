@@ -33,8 +33,18 @@ pub struct ReplicaFile {
     pub version: u32,
     pub vault_id: Uuid,
     pub device_id: Uuid,
+    /// The vault-key epoch the payload is encrypted with.
+    #[serde(default = "first_epoch", skip_serializing_if = "is_first_epoch")]
+    pub key_epoch: u32,
     pub written_at: i64,
     pub payload: Sealed,
+}
+
+fn first_epoch() -> u32 {
+    1
+}
+fn is_first_epoch(e: &u32) -> bool {
+    *e == 1
 }
 
 /// A self-contained, password-protected export that can be restored without

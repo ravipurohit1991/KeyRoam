@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../engine/api.dart';
 import '../engine/models.dart';
+import 'platform_paths.dart';
 
 enum Phase { loading, onboarding, locked, unlocked }
 
@@ -17,6 +18,7 @@ class AppTimings {
     this.syncDebounce = const Duration(seconds: 2),
     this.autoLock = const Duration(minutes: 5),
     this.clipboardClear = const Duration(seconds: 30),
+    this.browserWatch = const Duration(seconds: 3),
   });
 
   final Duration periodicSync;
@@ -24,6 +26,9 @@ class AppTimings {
   final Duration syncDebounce;
   final Duration autoLock;
   final Duration clipboardClear;
+
+  /// How often to look for logins saved by the browser extension.
+  final Duration browserWatch;
 }
 
 /// Application state and behaviour shared by all screens.
@@ -41,6 +46,10 @@ class AppController extends ChangeNotifier {
   EntryDetail? selected;
   bool syncing = false;
 
+  /// The vault key was replaced on another device; sync waits for the
+  /// master password.
+  bool keyRotated = false;
+
   /// One-shot message for a snackbar; consumed by the UI.
   String? notice;
 
@@ -49,7 +58,11 @@ class AppController extends ChangeNotifier {
   Timer? _retry;
   Timer? _idle;
   Timer? _clipboard;
+  Timer? _watch;
   bool _disposed = false;
+
+  /// The engine revision the entry list reflects.
+  int _seenRevision = 0;
 
   Phase get phase {
     final s = state;
@@ -106,6 +119,8 @@ class AppController extends ChangeNotifier {
     await refreshEntries();
     _periodic?.cancel();
     _periodic = Timer.periodic(timings.periodicSync, (_) => this.syncNow(quiet: true));
+    _watch?.cancel();
+    _watch = Timer.periodic(timings.browserWatch, (_) => _checkBrowserChanges());
     userActivity();
     if (syncNow) {
       // Sync when the vault is opened.
@@ -114,7 +129,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> lock() async {
-    for (final t in [_periodic, _debounce, _retry, _idle]) {
+    for (final t in [_periodic, _debounce, _retry, _idle, _watch]) {
       t?.cancel();
     }
     await api.lock();
@@ -124,6 +139,13 @@ class AppController extends ChangeNotifier {
     query = '';
     state = await api.state();
     _notify();
+  }
+
+  /// The operating system locked the screen, slept or switched user.
+  Future<void> lockForSystem() async {
+    if (phase != Phase.unlocked) return;
+    notice = 'Locked because the computer was locked';
+    await lock();
   }
 
   /// Reset the auto-lock timer; called on any pointer or key activity.
@@ -142,6 +164,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> refreshEntries() async {
     if (state?.unlocked != true) return;
+    final revision = state?.revision ?? _seenRevision;
     entries = await api.listEntries(query: query.isEmpty ? null : query);
     if (selectedId != null) {
       try {
@@ -152,6 +175,7 @@ class AppController extends ChangeNotifier {
       }
     }
     state = await api.state();
+    _seenRevision = revision;
     _notify();
   }
 
@@ -206,6 +230,18 @@ class AppController extends ChangeNotifier {
 
   Future<List<EntrySummary>> deletedEntries() => api.listEntries(deleted: true);
 
+  Future<void> purgeEntry(String id) async {
+    await api.purgeEntry(id);
+    await _modified();
+    _say('Deleted permanently');
+  }
+
+  Future<void> purgeDeleted() async {
+    final n = await api.purgeDeleted();
+    await _modified();
+    _say(n == 1 ? '1 item deleted permanently' : '$n items deleted permanently');
+  }
+
   // ----- sync -----
 
   /// "Sync Now". With [quiet], success is not announced.
@@ -237,6 +273,9 @@ class AppController extends ChangeNotifier {
         // Retry when connectivity returns.
         _retry = Timer(timings.offlineRetry, () => syncNow(quiet: true));
         if (!quiet) _say('Offline. Changes are saved on this device and will sync later.');
+      } else if (e.code == 'key_rotated') {
+        keyRotated = true;
+        if (!quiet) _say('The vault key was replaced on another device. Enter your master password to continue.');
       } else if (e.code == 'auth_required') {
         _say('Google sign-in expired. Sign in again from the menu.');
       } else if (!quiet || e.code != 'not_configured') {
@@ -247,6 +286,31 @@ class AppController extends ChangeNotifier {
       _notify();
     }
   }
+
+  // ----- browser integration -----
+
+  /// Refresh when the browser extension saved a login.
+  Future<void> _checkBrowserChanges() async {
+    final s = state;
+    if (s == null || !s.unlocked || !s.browserIntegration || syncing) return;
+    try {
+      final now = await api.state();
+      if (now.revision != _seenRevision) {
+        state = now;
+        await _modified();
+      }
+    } on KeyRoamException {
+      // The next tick tries again.
+    }
+  }
+
+  Future<void> setBrowserIntegration(bool enabled) async {
+    state = await api.setBrowserIntegration(enabled);
+    _seenRevision = state!.revision;
+    _notify();
+  }
+
+  Future<List<String>> installBrowserHost() => api.installBrowserHost(PlatformPaths.browserHostPath());
 
   // ----- clipboard -----
 
@@ -287,6 +351,26 @@ class AppController extends ChangeNotifier {
     _say('Master password changed. Other devices will use it after they sync.');
   }
 
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false}) async {
+    final r = await api.importCsv(path, deleteFile: deleteFile);
+    await _modified();
+    return r;
+  }
+
+  Future<void> rotateVaultKey(String password) async {
+    state = await api.rotateVaultKey(password);
+    await _modified();
+    _say('Vault key replaced. Your other devices will ask for the master password once.');
+  }
+
+  Future<void> adoptRotatedKey(String password) async {
+    final r = await api.adoptRotatedKey(password);
+    keyRotated = false;
+    state = r.state;
+    await refreshEntries();
+    _say(r.syncError == null ? 'Now using the new vault key' : 'New vault key in use. Sync will retry: ${r.syncError}');
+  }
+
   Future<ImportResult> importBackup(String path, String password) async {
     final r = await api.importBackup(path, password);
     await _modified();
@@ -296,7 +380,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    for (final t in [_periodic, _debounce, _retry, _idle, _clipboard]) {
+    for (final t in [_periodic, _debounce, _retry, _idle, _clipboard, _watch]) {
       t?.cancel();
     }
     super.dispose();

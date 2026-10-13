@@ -43,6 +43,7 @@
 | `files` | Local vault, replica, backup and secrets file formats |
 | `storage` | Atomic local persistence and rotating backups |
 | `generator` | CSPRNG password generator |
+| `import` | CSV import from browsers and other password managers |
 
 ### `keyroam-sync`
 
@@ -51,6 +52,29 @@
 | `oauth` | PKCE, authorisation URL, loopback receiver, token exchange, refresh and revoke, `GoogleSession` |
 | `drive` | Drive v3 client: list, download, multipart create, media update. Retries and token refresh |
 | `engine` | Sync rounds, sync status, `create_vault` and `join_vault` onboarding |
+
+### `keyroam-autofill`
+
+| Module | Responsibility |
+|---|---|
+| `origin` | Web origins, registrable domains (Public Suffix List), page matching |
+| `matching` | Logins for a page, save/update plans |
+| `protocol` | The extension protocol, answered by the app |
+| `bridge` | Authenticated loopback bridge between the host and the app |
+| `framing` | Length-prefixed messages (native messaging and the bridge) |
+| `install` | Registering the host with Chrome, Chromium, Edge, Brave, Vivaldi and Firefox |
+
+### `keyroam-native-host`
+
+The executable the browser starts for the extension. It relays each message
+to the running app over the bridge and holds no secrets. `install` and
+`uninstall` register it for the current user.
+
+### `browser-extension/`
+
+Manifest V3 extension (Chromium service worker, Firefox background scripts).
+It detects login forms, fills a login the user picks, and offers to save
+logins after sign-in. See `browser-extension/README.md`.
 
 ### `keyroam-ffi`
 
@@ -69,7 +93,6 @@ operation the GUI apps will offer is available here first.
 
 | Milestone | Component | Notes |
 |---|---|---|
-| 5 | `browser-extension/` (Manifest V3, Chromium and Firefox) and a native-messaging host | The extension talks only to the locally installed KeyRoam desktop app through native messaging. It never sees the vault, only the credentials the user picks for the current origin. URL matching uses the registrable domain (public-suffix aware). |
 | 6 | Android `CredentialProviderService` (Credential Manager, Android 14+) with an `AutofillService` fallback | Sync through WorkManager. OAuth through a custom-scheme redirect with PKCE. |
 | 7 | iOS `ASCredentialProviderViewController` extension | A shared App Group container for the encrypted vault, unlocked with the master password or Face ID. The key is wrapped in a Keychain item limited to biometry. Sync through BGAppRefreshTask. |
 | 8 | Cross-device test matrix, external security review, signed installers (MSIX, notarised DMG, Play, App Store) | |

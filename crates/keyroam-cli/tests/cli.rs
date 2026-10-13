@@ -101,6 +101,13 @@ fn entry_lifecycle() {
     let raw = std::fs::read_to_string(d.join("vault.krv")).unwrap();
     assert!(!raw.contains("synthetic-entry-pw") && !raw.contains("alice@example.test"));
 
+    // Permanent purge: deleted entries only, and nothing is left behind.
+    assert!(!keyroam(d, &["purge", &id], &format!("{PW}\n")).status.success());
+    ok(keyroam(d, &["rm", &id], &format!("{PW}\n")));
+    assert!(ok(keyroam(d, &["purge", "--all"], &format!("{PW}\n"))).contains("erased 1 deleted entry"));
+    assert!(!ok(keyroam(d, &["list", "--deleted"], &format!("{PW}\n"))).contains(&id));
+    assert!(!keyroam(d, &["restore", &id], &format!("{PW}\n")).status.success());
+
     let status = ok(keyroam(d, &["status"], ""));
     assert!(status.contains("waiting to upload"), "{status}");
 }
@@ -168,4 +175,28 @@ fn sync_without_google_reports_clearly() {
     let out = keyroam(dir.path(), &["sync"], &format!("{PW}\n"));
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("not signed in"));
+}
+
+#[test]
+fn import_csv_from_firefox() {
+    let dir = setup();
+    let d = dir.path();
+    let csv = d.join("logins.csv");
+    std::fs::write(
+        &csv,
+        "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\",\"timeCreated\",\"timeLastUsed\",\"timePasswordChanged\"\n\
+         \"https://example.test\",\"alice\",\"synthetic-ff-1\",,\"https://example.test\",\"{a}\",\"1\",\"1\",\"1\"\n",
+    )
+    .unwrap();
+    let csv_arg = csv.to_str().unwrap();
+    let out = ok(keyroam(d, &["import-csv", csv_arg], &format!("{PW}\n")));
+    assert!(out.contains("Imported 1 login(s) from Firefox"), "{out}");
+    assert!(out.contains("unencrypted"), "{out}");
+    let out = ok(keyroam(d, &["import-csv", csv_arg, "--delete"], &format!("{PW}\n")));
+    assert!(
+        out.contains("Imported 0 login(s)") && out.contains("1 already in KeyRoam"),
+        "{out}"
+    );
+    assert!(!csv.exists());
+    assert!(ok(keyroam(d, &["list"], &format!("{PW}\n"))).contains("example.test"));
 }

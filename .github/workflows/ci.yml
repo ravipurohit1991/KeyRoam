@@ -60,6 +60,27 @@ jobs:
       # Real-engine FFI tests (the build hook compiles Rust) + UI flow tests.
       - run: flutter test
 
+  extension:
+    name: Browser extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser-extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm test
+      - run: node build.mjs
+      # End to end: real Chromium, the real native host, bridge and protocol.
+      - run: cargo build --locked -p keyroam-native-host --bins --examples
+      - run: npm install --no-save --no-package-lock playwright@1.56.1
+      - run: npx playwright install --with-deps chromium
+      - run: node --test "e2e/*.e2e.js"
+
   audit:
     runs-on: ubuntu-latest
     steps:

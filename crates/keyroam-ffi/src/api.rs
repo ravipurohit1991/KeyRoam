@@ -9,22 +9,32 @@
 //! may arrive concurrently from several Dart isolates: the session mutex
 //! serialises them, and long Google sign-in waits run without holding it so
 //! they can be cancelled.
+//!
+//! When browser integration is on, the engine also serves the browser
+//! extension through `keyroam_autofill::bridge`, on its own threads and under
+//! the same session mutex. Those requests see the vault only while it is
+//! unlocked.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+
+use keyroam_autofill::bridge::BridgeServer;
+use keyroam_autofill::protocol::{self, Committer};
 
 use keyroam_core::files::{detect_format, BACKUP_FORMAT, LOCAL_VAULT_FORMAT};
 use keyroam_core::generator::{generate_password, GeneratorOptions};
 use keyroam_core::header::check_password_policy;
 use keyroam_core::{
-    BackupFile, EntryData, EntryRecord, KdfCost, LocalSecrets, LocalStore, LocalVaultFile, Vault, VaultHeader, Version,
+    BackupFile, EntryData, EntryId, EntryRecord, KdfCost, LocalSecrets, LocalStore, LocalVaultFile, Vault, VaultHeader,
+    Version,
 };
 use keyroam_sync::oauth::revoke_token;
 use keyroam_sync::{
-    commit_local_change, create_vault, fetch_remote_header, join_vault, open_system_browser, sync, DriveClient,
-    GoogleSession, OAuthClientConfig, PendingAuthorization, RemoteStore, SyncError, SyncReport, SyncState, SyncStatus,
+    adopt_rotated_key, commit_local_change, create_vault, fetch_remote_header, join_vault, open_system_browser,
+    rotate_vault_key, sync, DriveClient, GoogleSession, OAuthClientConfig, PendingAuthorization, RemoteStore,
+    SyncError, SyncReport, SyncState, SyncStatus,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -61,6 +71,7 @@ impl From<keyroam_core::Error> for ApiError {
             E::InvalidInput(_) => "invalid_input",
             E::NoVault => "no_vault",
             E::VaultExists => "vault_exists",
+            E::KeyRotated => "key_rotated",
             E::Io(_) => "io",
         };
         ApiError::new(code, e.to_string())
@@ -102,6 +113,7 @@ fn clone_core(e: &keyroam_core::Error) -> keyroam_core::Error {
         E::InvalidInput(s) => E::InvalidInput(s.clone()),
         E::NoVault => E::NoVault,
         E::VaultExists => E::VaultExists,
+        E::KeyRotated => E::KeyRotated,
         E::Io(io) => E::Io(std::io::Error::new(io.kind(), io.to_string())),
     }
 }
@@ -120,10 +132,44 @@ struct Session {
 }
 
 pub struct Engine {
-    session: Mutex<Session>,
+    session: Arc<Mutex<Session>>,
     pending: Mutex<Option<PendingAuthorization>>,
     cancel: AtomicBool,
     kdf_cost: KdfCost,
+    /// Serves the browser extension while browser integration is on.
+    bridge: Mutex<Option<BridgeServer>>,
+    /// Counts vault changes made outside the UI (by the browser extension),
+    /// so the UI knows to refresh.
+    revision: Arc<AtomicU64>,
+}
+
+const SETTINGS_FILE: &str = "settings.json";
+
+/// Non-secret, device-local preferences.
+#[derive(Default, Serialize, Deserialize)]
+struct Settings {
+    #[serde(default)]
+    browser_integration: bool,
+}
+
+/// Commits browser-extension saves like UI edits: under the data-directory
+/// lock, persisted and queued for sync.
+struct BridgeCommitter<'a> {
+    store: Option<&'a LocalStore>,
+    revision: &'a AtomicU64,
+}
+
+impl Committer for BridgeCommitter<'_> {
+    fn commit(
+        &mut self,
+        vault: &mut Vault,
+        change: &mut dyn FnMut(&mut Vault) -> keyroam_core::Result<(EntryId, bool)>,
+    ) -> Result<(EntryId, bool), String> {
+        let store = self.store.ok_or("no data directory")?;
+        let out = commit_local_change(vault, store, false, change).map_err(|e| ApiError::from(e).message)?;
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        Ok(out)
+    }
 }
 
 impl Default for Engine {
@@ -160,6 +206,10 @@ struct SyncInfo {
 #[derive(Serialize)]
 struct AppState {
     data_dir: Option<String>,
+    /// Browser integration is on and the extension can reach this app.
+    browser_integration: bool,
+    /// Changes when the browser extension modified the vault.
+    revision: u64,
     has_vault: bool,
     unlocked: bool,
     signed_in: bool,
@@ -237,10 +287,12 @@ fn parse_id(s: &str) -> ApiResult<keyroam_core::EntryId> {
 impl Engine {
     pub fn with_kdf_cost(kdf_cost: KdfCost) -> Self {
         Engine {
-            session: Mutex::new(Session::default()),
+            session: Arc::new(Mutex::new(Session::default())),
             pending: Mutex::new(None),
             cancel: AtomicBool::new(false),
             kdf_cost,
+            bridge: Mutex::new(None),
+            revision: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -304,12 +356,35 @@ impl Engine {
             "update_entry" => self.update(params(p)?),
             "delete_entry" => self.modify(params(p)?, |v, id| v.delete_entry(id)),
             "restore_entry" => self.modify(params(p)?, |v, id| v.restore_entry(id)),
+            "purge_entry" => self.modify(params(p)?, |v, id| v.purge_entry(id)),
+            "purge_deleted" => {
+                let mut s = lock(&self.session);
+                let (vault, store) = Self::unlocked(&mut s)?;
+                let purged = commit_local_change(vault, store, false, |v| v.purge_deleted())?;
+                Ok(json!({ "purged": purged }))
+            }
             "resolve_conflict" => self.resolve(params(p)?),
             "sync" => self.sync_now(),
             "export_backup" => self.export(params(p)?),
             "import_backup" => self.import(params(p)?),
+            "import_csv" => self.import_csv(params(p)?),
             "change_password" => self.change_password(params(p)?),
+            "rotate_vault_key" => self.rotate_key(params(p)?),
+            "adopt_rotated_key" => self.adopt_key(params(p)?),
             "sign_out" => self.sign_out(),
+            "set_browser_integration" => {
+                #[derive(Deserialize)]
+                struct P {
+                    enabled: bool,
+                }
+                let p: P = params(p)?;
+                self.set_browser_integration(p.enabled)
+            }
+            "install_browser_host" => self.install_browser_host(params(p)?),
+            "uninstall_browser_host" => {
+                let removed = keyroam_autofill::install::uninstall().map_err(|e| ApiError::new("io", e.to_string()))?;
+                Ok(json!(removed.iter().map(|t| t.browser).collect::<Vec<_>>()))
+            }
             other => Err(ApiError::new("invalid_request", format!("unknown method {other}"))),
         }
     }
@@ -324,19 +399,25 @@ impl Engine {
             .or_else(|| std::env::var_os("KEYROAM_HOME").map(PathBuf::from))
             .or_else(|| dirs::data_dir().map(|d| d.join("KeyRoam")))
             .ok_or_else(|| ApiError::new("io", "cannot determine a data directory"))?;
+        lock(&self.bridge).take();
+        let store = LocalStore::new(dir);
         *lock(&self.session) = Session {
-            store: Some(LocalStore::new(dir)),
+            store: Some(store.clone()),
             ..Default::default()
         };
+        if Self::settings(&store).browser_integration {
+            // Best effort: the app works without it; the state shows it is off.
+            let _ = self.start_bridge(&store);
+        }
         self.state()
     }
 
     fn state(&self) -> ApiResult {
         let s = lock(&self.session);
-        Ok(serde_json::to_value(Self::state_of(&s))?)
+        Ok(serde_json::to_value(self.state_of(&s))?)
     }
 
-    fn state_of(s: &Session) -> AppState {
+    fn state_of(&self, s: &Session) -> AppState {
         let store = s.store.as_ref();
         let has_vault = store.is_some_and(|st| st.has_vault());
         let has_secrets = store.and_then(|st| st.load_secrets().ok().flatten()).is_some();
@@ -355,6 +436,8 @@ impl Engine {
         };
         AppState {
             data_dir: store.map(|st| st.root().display().to_string()),
+            browser_integration: lock(&self.bridge).is_some(),
+            revision: self.revision.load(Ordering::SeqCst),
             has_vault,
             unlocked: s.vault.is_some(),
             signed_in: s.remote.is_some() || has_secrets || s.refresh_token.is_some(),
@@ -440,7 +523,7 @@ impl Engine {
         }
         s.refresh_token = Some(token);
         s.remote = Some(remote);
-        Ok(serde_json::to_value(Self::state_of(&s))?)
+        Ok(serde_json::to_value(self.state_of(&s))?)
     }
 
     /// Test hook: install a remote store as if Google sign-in had completed.
@@ -463,7 +546,62 @@ impl Engine {
         store.delete_secrets()?;
         s.remote = None;
         s.refresh_token = None;
-        Ok(serde_json::to_value(Self::state_of(&s))?)
+        Ok(serde_json::to_value(self.state_of(&s))?)
+    }
+
+    // ----- browser integration -----
+
+    fn settings(store: &LocalStore) -> Settings {
+        store.read_json(SETTINGS_FILE).ok().flatten().unwrap_or_default()
+    }
+
+    fn start_bridge(&self, store: &LocalStore) -> ApiResult<()> {
+        let session = self.session.clone();
+        let revision = self.revision.clone();
+        let handler = Arc::new(move |request: &[u8]| {
+            let (rid, request) = match protocol::parse_request(request) {
+                Ok(r) => r,
+                Err(response) => return response,
+            };
+            let mut guard = lock(&session);
+            let s = &mut *guard;
+            let mut committer = BridgeCommitter {
+                store: s.store.as_ref(),
+                revision: &revision,
+            };
+            protocol::handle(&rid, request, s.vault.as_mut(), &mut committer)
+        });
+        let server = BridgeServer::start(store, handler).map_err(|e| ApiError::new("io", e.to_string()))?;
+        *lock(&self.bridge) = Some(server);
+        Ok(())
+    }
+
+    fn set_browser_integration(&self, enabled: bool) -> ApiResult {
+        let store = Self::store(&lock(&self.session))?.clone();
+        lock(&self.bridge).take();
+        store.write_json(
+            SETTINGS_FILE,
+            &Settings {
+                browser_integration: enabled,
+            },
+        )?;
+        if enabled {
+            self.start_bridge(&store)?;
+        }
+        self.state()
+    }
+
+    fn install_browser_host(&self, p: InstallHostParams) -> ApiResult {
+        let host = PathBuf::from(&p.host_path);
+        if !host.is_file() {
+            return Err(ApiError::new(
+                "not_found",
+                format!("the browser helper is missing: {}", host.display()),
+            ));
+        }
+        let installed = keyroam_autofill::install::install(&host, &p.extension_ids)
+            .map_err(|e| ApiError::new("install_failed", install_hint(&host, &e)))?;
+        Ok(json!(installed.iter().map(|t| t.browser).collect::<Vec<_>>()))
     }
 
     // ----- onboarding -----
@@ -485,7 +623,7 @@ impl Engine {
             Ok(r) => json!({ "report": report_json(&r) }),
             Err(e) => json!({ "error": ApiError::from(e).message }),
         };
-        Ok(json!({ "state": Self::state_of(&s), "sync": sync }))
+        Ok(json!({ "state": self.state_of(&s), "sync": sync }))
     }
 
     fn fetch_remote(&self) -> ApiResult {
@@ -522,7 +660,7 @@ impl Engine {
             Ok(r) => json!({ "report": report_json(&r) }),
             Err(e) => json!({ "error": ApiError::from(e).message }),
         };
-        Ok(json!({ "state": Self::state_of(&s), "sync": sync }))
+        Ok(json!({ "state": self.state_of(&s), "sync": sync }))
     }
 
     fn unlock(&self, p: PasswordParams) -> ApiResult {
@@ -541,14 +679,17 @@ impl Engine {
         };
         s.refresh_token = token.map(Zeroizing::new);
         s.vault = Some(vault);
-        Ok(serde_json::to_value(Self::state_of(&s))?)
+        Ok(serde_json::to_value(self.state_of(&s))?)
     }
 
     // ----- entries -----
 
     fn list(&self, p: ListParams) -> ApiResult {
         let mut s = lock(&self.session);
-        let (vault, _) = Self::unlocked(&mut s)?;
+        let (vault, store) = Self::unlocked(&mut s)?;
+        // Pick up edits another KeyRoam process (e.g. the CLI) saved. Reading
+        // is safe without the lock because saves are atomic renames.
+        let _ = store.absorb(vault);
         let recs: Vec<&EntryRecord> = if p.deleted {
             vault.deleted_entries().collect()
         } else if let Some(q) = p.query.as_deref().filter(|q| !q.trim().is_empty()) {
@@ -584,16 +725,15 @@ impl Engine {
     fn add(&self, p: DataParams) -> ApiResult {
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        let id = vault.add_entry(p.data)?;
-        commit_local_change(vault, store)?;
+        let id = commit_local_change(vault, store, false, |v| v.add_entry(p.data))?;
         Ok(json!({ "id": id.to_string() }))
     }
 
     fn update(&self, p: UpdateParams) -> ApiResult {
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        vault.update_entry(parse_id(&p.id)?, p.data)?;
-        commit_local_change(vault, store)?;
+        let id = parse_id(&p.id)?;
+        commit_local_change(vault, store, false, |v| v.update_entry(id, p.data))?;
         Ok(Value::Null)
     }
 
@@ -604,8 +744,8 @@ impl Engine {
     ) -> ApiResult {
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        f(vault, parse_id(&p.id)?)?;
-        commit_local_change(vault, store)?;
+        let id = parse_id(&p.id)?;
+        commit_local_change(vault, store, false, |v| f(v, id))?;
         Ok(Value::Null)
     }
 
@@ -640,7 +780,7 @@ impl Engine {
             _ => ApiError::new("not_signed_in", "this device is not signed in to Google"),
         })?;
         let report = sync(vault, &store, remote.as_ref())?;
-        Ok(json!({ "report": report_json(&report), "state": Self::state_of(s) }))
+        Ok(json!({ "report": report_json(&report), "state": self.state_of(s) }))
     }
 
     fn export(&self, p: ExportParams) -> ApiResult {
@@ -673,11 +813,7 @@ impl Engine {
             return Err(ApiError::new("invalid_data", "not a KeyRoam backup file"));
         };
         let before = vault.entries().count();
-        let changed = vault.merge_state(&state)?;
-        if changed {
-            store.save_vault(&vault.to_local_file()?, true)?;
-            commit_local_change(vault, store)?;
-        }
+        let changed = commit_local_change(vault, store, true, |v| v.merge_state(&state))?;
         Ok(json!({ "before": before, "after": vault.entries().count(), "changed": changed }))
     }
 
@@ -686,10 +822,76 @@ impl Engine {
         let new = Zeroizing::new(p.new);
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        vault.change_password(&current, &new, self.kdf_cost)?;
-        store.save_vault(&vault.to_local_file()?, true)?;
-        commit_local_change(vault, store)?;
+        if !vault.verify_password(&current) {
+            return Err(keyroam_core::Error::WrongPassword.into());
+        }
+        // Argon2 for the new password runs once, under the data-directory lock.
+        commit_local_change(vault, store, true, |v| v.change_password(&current, &new, self.kdf_cost))?;
         Ok(Value::Null)
+    }
+}
+
+#[derive(Deserialize)]
+struct ImportCsvParams {
+    path: String,
+    #[serde(default)]
+    delete_file: bool,
+}
+
+impl Engine {
+    /// Import logins from a browser's or password manager's CSV export.
+    fn import_csv(&self, p: ImportCsvParams) -> ApiResult {
+        let path = PathBuf::from(&p.path);
+        let bytes = Zeroizing::new(std::fs::read(&path).map_err(keyroam_core::Error::from)?);
+        let parsed = keyroam_core::import::parse_csv(&bytes)?;
+        let mut s = lock(&self.session);
+        let (vault, store) = Self::unlocked(&mut s)?;
+        let summary = commit_local_change(vault, store, true, |v| v.import_logins(&parsed.logins))?;
+        let deleted = p.delete_file && keyroam_core::import::remove_plaintext_file(&path).is_ok();
+        Ok(json!({
+            "format": parsed.format,
+            "added": summary.added,
+            "duplicates": summary.duplicates,
+            "skipped": parsed.skipped,
+            "deleted": deleted,
+        }))
+    }
+
+    /// Replace the vault key; the new header and replica upload on the next sync.
+    fn rotate_key(&self, p: PasswordParams) -> ApiResult {
+        let password = Zeroizing::new(p.password);
+        let mut guard = lock(&self.session);
+        let s = &mut *guard;
+        let store = Self::store(s)?.clone();
+        let vault = s
+            .vault
+            .as_mut()
+            .ok_or_else(|| ApiError::new("locked", "the vault is locked"))?;
+        rotate_vault_key(vault, &store, &password, self.kdf_cost)?;
+        Ok(serde_json::to_value(self.state_of(s))?)
+    }
+
+    /// After a sync failed with `key_rotated`: adopt the new key with the
+    /// master password, then sync.
+    fn adopt_key(&self, p: PasswordParams) -> ApiResult {
+        let password = Zeroizing::new(p.password);
+        let mut guard = lock(&self.session);
+        let s = &mut *guard;
+        let store = Self::store(s)?.clone();
+        let remote = s
+            .remote
+            .as_ref()
+            .ok_or_else(|| ApiError::new("not_signed_in", "this device is not signed in to Google"))?;
+        let vault = s
+            .vault
+            .as_mut()
+            .ok_or_else(|| ApiError::new("locked", "the vault is locked"))?;
+        adopt_rotated_key(vault, &store, remote.as_ref(), &password)?;
+        let sync = match sync(vault, &store, remote.as_ref()) {
+            Ok(r) => json!({ "report": report_json(&r) }),
+            Err(e) => json!({ "error": ApiError::from(e).message }),
+        };
+        Ok(json!({ "state": self.state_of(s), "sync": sync }))
     }
 }
 
@@ -724,6 +926,22 @@ impl From<serde_json::Error> for ApiError {
     fn from(e: serde_json::Error) -> Self {
         ApiError::new("internal", e.to_string())
     }
+}
+
+/// The macOS app sandbox blocks writing other apps' folders; the helper can
+/// register itself when run from Terminal instead.
+fn install_hint(host: &Path, e: &std::io::Error) -> String {
+    format!(
+        "Could not register KeyRoam with your browsers ({e}). Run this command in a terminal instead:\n\n\"{}\" install",
+        host.display()
+    )
+}
+
+#[derive(Deserialize)]
+struct InstallHostParams {
+    host_path: String,
+    #[serde(default)]
+    extension_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]

@@ -13,6 +13,7 @@ pub mod error;
 pub mod files;
 pub mod generator;
 pub mod header;
+pub mod import;
 pub mod kdf;
 pub mod model;
 pub mod storage;

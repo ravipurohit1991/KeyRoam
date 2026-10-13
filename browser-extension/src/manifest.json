@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "KeyRoam",
+  "short_name": "KeyRoam",
+  "version": "0.2.0",
+  "description": "Fill and save passwords from the KeyRoam desktop app. Your keys. Wherever you go.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyDGa5KQyaWZd3M7PRK+E8WorxuMxUJCAJnFQsA1yxRrT10f/30D1qUHg/RjGfI2Y89oJUyApIqvYjkG9qBvwKIq9ydDYpbKnZUi5bEj5dZr7Kopoq0VHpoL1esYwFxUmvtRNg56GZBktF6nez5kfonWi6ceAQPpJoF9JQ/IU+kxk2+yNWsTP04im1V4Cyo5eR7yRHLNlxFrwkcbbmrbQ1sChvowCtgEjF1SZrLLoq6UcbvBeJpo/G6o+Eo7geHOzLlq3nQF36KTYTZ/emRJNorl0/V4k3XaaWFTe4fXgVIv+bMdkMjNGKo2eRlhQJGMPac3c+pQZCCdMtG0um2ZjzQIDAQAB",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "KeyRoam",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["nativeMessaging", "storage"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content/forms.js", "content/content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["savebar/savebar.html"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
+  "commands": {
+    "fill-login": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Fill the login for this page"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  }
+}

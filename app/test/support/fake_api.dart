@@ -16,6 +16,9 @@ class FakeKeyRoamApi implements KeyRoamApi {
   bool offline = false;
   String syncStatus = 'never';
   int syncCount = 0;
+  bool browserIntegration = false;
+  int revision = 0;
+  String? installedHost;
   final calls = <String>[];
   final _entries = <String, EntryDetail>{};
   final _deleted = <String>{};
@@ -47,6 +50,8 @@ class FakeKeyRoamApi implements KeyRoamApi {
     entryCount: _visible.length,
     conflicts: _visible.where((e) => e.conflict).length,
     sync: SyncInfo(status: syncStatus),
+    browserIntegration: browserIntegration,
+    revision: revision,
   );
 
   Iterable<EntryDetail> get _visible => _entries.values.where((e) => !_deleted.contains(e.id));
@@ -184,6 +189,20 @@ class FakeKeyRoamApi implements KeyRoamApi {
   Future<void> restoreEntry(String id) async => _deleted.remove(id);
 
   @override
+  Future<void> purgeEntry(String id) async {
+    _log('purge:$id');
+    if (!_deleted.remove(id)) throw const KeyRoamException('invalid_input', 'only deleted entries');
+    _entries.remove(id);
+  }
+
+  @override
+  Future<int> purgeDeleted() async {
+    final n = _deleted.length;
+    _deleted.toList().forEach(purgeEntry);
+    return n;
+  }
+
+  @override
   Future<void> resolveConflict(String id, int choice) async {
     _log('resolveConflict:$choice');
     await updateEntry(id, _entries[id]!.versions[choice].data!);
@@ -192,6 +211,7 @@ class FakeKeyRoamApi implements KeyRoamApi {
   @override
   Future<SyncResult> sync() async {
     syncCount++;
+    if (remoteKeyRotated) throw const KeyRoamException('key_rotated', 'the vault key was replaced');
     if (offline) {
       syncStatus = 'offline';
       throw const KeyRoamException('offline', 'network unavailable');
@@ -209,6 +229,51 @@ class FakeKeyRoamApi implements KeyRoamApi {
   @override
   Future<ImportResult> importBackup(String path, String password) async =>
       ImportResult(before: _visible.length, after: _visible.length, changed: false);
+
+  /// Simulate the browser extension saving a login through the engine.
+  String saveFromBrowser(EntryData data) {
+    final id = seed(data);
+    revision++;
+    return id;
+  }
+
+  bool remoteKeyRotated = false;
+
+  @override
+  Future<CsvImportResult> importCsv(String path, {bool deleteFile = false}) async {
+    _log('importCsv:$path:$deleteFile');
+    if (!path.endsWith('.csv')) throw const KeyRoamException('invalid_input', 'no password column found');
+    seed(const EntryData(title: 'imported.example', username: 'csv-user'));
+    return CsvImportResult(format: 'Chrome', added: 1, duplicates: 2, skipped: 0, deleted: deleteFile);
+  }
+
+  @override
+  Future<AppState> rotateVaultKey(String password) async {
+    if (password != this.password) throw const KeyRoamException('wrong_password', 'wrong');
+    _log('rotateVaultKey');
+    return _state;
+  }
+
+  @override
+  Future<OnboardingResult> adoptRotatedKey(String password) async {
+    if (password != this.password) throw const KeyRoamException('wrong_password', 'wrong');
+    _log('adoptRotatedKey');
+    remoteKeyRotated = false;
+    return OnboardingResult(_state, report: const SyncReport());
+  }
+
+  @override
+  Future<AppState> setBrowserIntegration(bool enabled) async {
+    _log('browserIntegration:$enabled');
+    browserIntegration = enabled;
+    return _state;
+  }
+
+  @override
+  Future<List<String>> installBrowserHost(String hostPath) async {
+    installedHost = hostPath;
+    return ['Google Chrome', 'Firefox'];
+  }
 
   @override
   Future<void> changePassword(String current, String newPassword) async {
