@@ -33,6 +33,14 @@ class PlatformPaths {
     return '$dir${Platform.pathSeparator}$name';
   }
 
+  /// Run [lock] when the operating system locks the screen, sleeps or
+  /// switches user (reported by the Windows and macOS runners).
+  static void onSystemLock(Future<void> Function() lock) {
+    const MethodChannel('keyroam/system').setMethodCallHandler((call) async {
+      if (call.method == 'lock') await lock();
+    });
+  }
+
   static Future<PlatformPaths> load() async {
     if (!Platform.isAndroid) return const PlatformPaths();
     final m = await _channel.invokeMapMethod<String, String>('paths');

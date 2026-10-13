@@ -137,6 +137,13 @@ class AppController extends ChangeNotifier {
     _notify();
   }
 
+  /// The operating system locked the screen, slept or switched user.
+  Future<void> lockForSystem() async {
+    if (phase != Phase.unlocked) return;
+    notice = 'Locked because the computer was locked';
+    await lock();
+  }
+
   /// Reset the auto-lock timer; called on any pointer or key activity.
   void userActivity() {
     if (phase != Phase.unlocked) return;

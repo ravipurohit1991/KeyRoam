@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:keyroam/src/app/controller.dart';
+import 'package:keyroam/src/app/platform_paths.dart';
 import 'package:keyroam/src/engine/models.dart';
 import 'package:keyroam/src/ui/app.dart';
 
@@ -212,6 +214,27 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('addEntry')), findsOneWidget);
     await tester.pump(fastTimings.autoLock + const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(find.text('Your vault is locked'), findsOneWidget);
+    expect(api.unlocked, isFalse);
+    await finish(tester, c);
+  });
+
+  testWidgets('locks when the operating system locks or sleeps', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = await start(tester, api);
+    PlatformPaths.onSystemLock(c.lockForSystem);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+    expect(api.unlocked, isTrue);
+
+    // What the Windows and macOS runners send.
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'keyroam/system',
+      const StandardMethodCodec().encodeMethodCall(const MethodCall('lock')),
+      (_) {},
+    );
     await tester.pumpAndSettle();
     expect(find.text('Your vault is locked'), findsOneWidget);
     expect(api.unlocked, isFalse);

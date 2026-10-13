@@ -8,6 +8,7 @@ import 'src/ui/app.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final controller = AppController(NativeKeyRoamApi());
+  PlatformPaths.onSystemLock(controller.lockForSystem);
   runApp(KeyRoamApp(controller: controller));
   // Data directory: KEYROAM_HOME if set, otherwise the platform default
   // (reported by the host app on Android).
