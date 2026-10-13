@@ -268,6 +268,18 @@ impl Vault {
         Ok(false)
     }
 
+    /// Merge this device's local vault file as saved by another process that
+    /// shares the data directory. A newer header in it (a master-password
+    /// change made by that process) is adopted. Returns true if anything changed.
+    pub fn absorb_local(&mut self, file: &LocalVaultFile) -> Result<bool> {
+        if file.header.vault_id != self.vault_id() || file.device_id != self.device_id {
+            return Err(Error::VaultMismatch);
+        }
+        let state: VaultState = open_json(&self.key, &local_ctx(self.vault_id(), self.device_id), &file.payload)?;
+        let header_changed = self.adopt_header(&file.header)?;
+        Ok(self.merge_state(&state)? || header_changed)
+    }
+
     // ----- Sync payloads -----
 
     pub fn seal_replica(&self) -> Result<ReplicaFile> {

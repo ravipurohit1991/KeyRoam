@@ -5,6 +5,8 @@ members = ["crates/keyroam-core", "crates/keyroam-sync", "crates/keyroam-cli", "
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# `File::lock` (data-directory lock) needs 1.89.
+rust-version = "1.89"
 publish = false
 
 [workspace.dependencies]

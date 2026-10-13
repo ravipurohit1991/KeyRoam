@@ -222,10 +222,15 @@ impl Ctx {
         }
     }
 
-    fn commit(&self, vault: &mut Vault) -> CliResult {
-        commit_local_change(vault, &self.store)?;
-        self.auto_sync(vault);
-        Ok(())
+    /// Apply `change` under the data-directory lock (merging anything the
+    /// desktop app saved meanwhile) and persist it. Call `auto_sync` after.
+    fn commit<T>(
+        &self,
+        vault: &mut Vault,
+        backup_previous: bool,
+        change: impl FnOnce(&mut Vault) -> keyroam_core::Result<T>,
+    ) -> CliResult<T> {
+        Ok(commit_local_change(vault, &self.store, backup_previous, change)?)
     }
 }
 
@@ -554,7 +559,7 @@ fn run(cli: Cli) -> CliResult {
                     p
                 }
             };
-            let id = vault.add_entry(EntryData {
+            let data = EntryData {
                 title,
                 username,
                 password: password.to_string(),
@@ -562,9 +567,11 @@ fn run(cli: Cli) -> CliResult {
                 notes,
                 tags,
                 favorite: false,
-            })?;
+            };
+            data.validate()?;
+            let id = ctx.commit(&mut vault, false, |v| v.add_entry(data))?;
             println!("Added {}", short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Edit {
             id,
@@ -602,23 +609,23 @@ fn run(cli: Cli) -> CliResult {
             } else if password {
                 data.password = ctx.prompt.secret("New entry password: ")?.to_string();
             }
-            vault.update_entry(id, data)?;
+            ctx.commit(&mut vault, false, |v| v.update_entry(id, data))?;
             println!("Updated {}", short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Rm { id } => {
             let (mut vault, _pw) = ctx.unlock()?;
             let id = vault.resolve_id(&id)?;
-            vault.delete_entry(id)?;
+            ctx.commit(&mut vault, false, |v| v.delete_entry(id))?;
             println!("Deleted {} (restore with `keyroam restore {}`)", short(&id), short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Restore { id } => {
             let (mut vault, _pw) = ctx.unlock()?;
             let id = vault.resolve_id(&id)?;
-            vault.restore_entry(id)?;
+            ctx.commit(&mut vault, false, |v| v.restore_entry(id))?;
             println!("Restored {}", short(&id));
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Conflicts => {
             let (mut vault, _pw) = ctx.unlock()?;
@@ -650,12 +657,12 @@ fn run(cli: Cli) -> CliResult {
         Cmd::Resolve { id, choice } => {
             let (mut vault, _pw) = ctx.unlock()?;
             let id = vault.resolve_id(&id)?;
-            vault.resolve_conflict(id, choice)?;
+            ctx.commit(&mut vault, false, |v| v.resolve_conflict(id, choice))?;
             println!(
                 "Resolved {}; the other versions remain in the entry history.",
                 short(&id)
             );
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
         Cmd::Generate {
             length,
@@ -701,7 +708,7 @@ fn run(cli: Cli) -> CliResult {
                 return Err(format!("{} is not a KeyRoam backup", path.display()).into());
             };
             let before = vault.entries().count();
-            let changed = vault.merge_state(&state)?;
+            let changed = ctx.commit(&mut vault, true, |v| v.merge_state(&state))?;
             println!(
                 "Merged backup: {} entries before, {} after{}.",
                 before,
@@ -709,17 +716,17 @@ fn run(cli: Cli) -> CliResult {
                 if changed { "" } else { " (nothing new)" }
             );
             if changed {
-                ctx.store.save_vault(&vault.to_local_file()?, true)?;
-                ctx.commit(&mut vault)?;
+                ctx.auto_sync(&mut vault);
             }
         }
         Cmd::Passwd => {
             let (mut vault, current) = ctx.unlock()?;
             let new = ctx.prompt.new_password("New master password")?;
-            vault.change_password(&current, &new, KdfCost::DEFAULT)?;
-            ctx.store.save_vault(&vault.to_local_file()?, true)?;
+            ctx.commit(&mut vault, true, |v| {
+                v.change_password(&current, &new, KdfCost::DEFAULT)
+            })?;
             println!("Master password changed. Other devices will ask for the new password after they sync.");
-            ctx.commit(&mut vault)?;
+            ctx.auto_sync(&mut vault);
         }
     }
     Ok(())

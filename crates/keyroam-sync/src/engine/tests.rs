@@ -15,9 +15,7 @@ struct Device {
 
 impl Device {
     fn add(&mut self, title: &str, pw: &str) -> keyroam_core::EntryId {
-        let id = self.vault.add_entry(entry(title, pw)).unwrap();
-        commit_local_change(&self.vault, &self.store).unwrap();
-        id
+        commit_local_change(&mut self.vault, &self.store, false, |v| v.add_entry(entry(title, pw))).unwrap()
     }
     fn edit(&mut self, id: keyroam_core::EntryId, pw: &str) {
         let title = self
@@ -30,8 +28,10 @@ impl Device {
             .unwrap()
             .title
             .clone();
-        self.vault.update_entry(id, entry(&title, pw)).unwrap();
-        commit_local_change(&self.vault, &self.store).unwrap();
+        commit_local_change(&mut self.vault, &self.store, false, |v| {
+            v.update_entry(id, entry(&title, pw))
+        })
+        .unwrap();
     }
     fn sync(&mut self, remote: &dyn RemoteStore) -> Result<SyncReport> {
         sync(&mut self.vault, &self.store, remote)
@@ -198,8 +198,7 @@ fn concurrent_edits_become_conflicts_not_lost_updates() {
         .iter()
         .position(|v| v.data.as_ref().unwrap().password == "from-a")
         .unwrap();
-    a.vault.resolve_conflict(id, idx).unwrap();
-    commit_local_change(&a.vault, &a.store).unwrap();
+    commit_local_change(&mut a.vault, &a.store, false, |v| v.resolve_conflict(id, idx)).unwrap();
     let r = a.sync(&remote).unwrap();
     assert_eq!(r.conflicts, 0);
     let r = b.sync(&remote).unwrap();
@@ -253,15 +252,85 @@ fn unchanged_replicas_are_not_redownloaded() {
     assert!(!r.uploaded);
 }
 
+/// Runs `during_upload` once, just before the first replica upload.
+struct InterleavedRemote<'a, F: Fn()> {
+    inner: &'a MemoryRemote,
+    during_upload: F,
+    fired: std::cell::Cell<bool>,
+}
+
+impl<F: Fn()> InterleavedRemote<'_, F> {
+    fn fire(&self) {
+        if !self.fired.replace(true) {
+            (self.during_upload)();
+        }
+    }
+}
+
+impl<F: Fn()> RemoteStore for InterleavedRemote<'_, F> {
+    fn list(&self) -> Result<Vec<RemoteFile>> {
+        self.inner.list()
+    }
+    fn download(&self, id: &str) -> Result<Vec<u8>> {
+        self.inner.download(id)
+    }
+    fn create(&self, name: &str, bytes: &[u8]) -> Result<RemoteFile> {
+        self.fire();
+        self.inner.create(name, bytes)
+    }
+    fn update(&self, id: &str, bytes: &[u8]) -> Result<RemoteFile> {
+        self.fire();
+        self.inner.update(id, bytes)
+    }
+}
+
+#[test]
+fn second_process_on_same_data_dir_is_merged_and_uploaded() {
+    let remote = MemoryRemote::default();
+    let mut a = new_user(&remote);
+    // The CLI opens the same data directory while the app (`a`) is running.
+    let mut cli = a.reopen(PW).unwrap();
+    let from_cli = commit_local_change(&mut cli, &a.store, false, |v| v.add_entry(entry("cli", "c1"))).unwrap();
+    let from_app = a.add("app", "a1");
+    // The app's commit merged the CLI's entry before saving.
+    assert_eq!(a.password_of(from_cli), "c1");
+
+    // The CLI commits again while the app's sync round is uploading. That
+    // change is not in the uploaded replica, so it must stay pending.
+    let store = a.store.clone();
+    let late = std::cell::Cell::new(None);
+    let interleaved = InterleavedRemote {
+        inner: &remote,
+        during_upload: || {
+            let mut cli = Vault::open(&store.load_vault().unwrap(), PW).unwrap();
+            let id = commit_local_change(&mut cli, &store, false, |v| v.add_entry(entry("late", "l1"))).unwrap();
+            late.set(Some(id));
+        },
+        fired: std::cell::Cell::new(false),
+    };
+    assert!(a.sync(&interleaved).unwrap().uploaded);
+    let late = late.get().expect("hook ran");
+    assert!(SyncState::load(&a.store).unwrap().pending_upload);
+
+    let r = a.sync(&remote).unwrap();
+    assert!(r.uploaded);
+    assert!(!SyncState::load(&a.store).unwrap().pending_upload);
+    let mut b = join(&remote, PW);
+    b.sync(&remote).unwrap();
+    assert_eq!(b.password_of(from_app), "a1");
+    assert_eq!(b.password_of(from_cli), "c1");
+    assert_eq!(b.password_of(late), "l1");
+}
+
 #[test]
 fn password_change_propagates() {
     let remote = MemoryRemote::default();
     let mut a = new_user(&remote);
     let mut b = join(&remote, PW);
-    a.vault
-        .change_password(PW, "changed-synthetic-pw", KdfCost::MINIMUM)
-        .unwrap();
-    commit_local_change(&a.vault, &a.store).unwrap();
+    commit_local_change(&mut a.vault, &a.store, true, |v| {
+        v.change_password(PW, "changed-synthetic-pw", KdfCost::MINIMUM)
+    })
+    .unwrap();
     assert!(a.sync(&remote).unwrap().header_uploaded);
 
     let r = b.sync(&remote).unwrap();

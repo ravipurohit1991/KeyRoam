@@ -548,7 +548,10 @@ impl Engine {
 
     fn list(&self, p: ListParams) -> ApiResult {
         let mut s = lock(&self.session);
-        let (vault, _) = Self::unlocked(&mut s)?;
+        let (vault, store) = Self::unlocked(&mut s)?;
+        // Pick up edits another KeyRoam process (e.g. the CLI) saved. Reading
+        // is safe without the lock because saves are atomic renames.
+        let _ = store.absorb(vault);
         let recs: Vec<&EntryRecord> = if p.deleted {
             vault.deleted_entries().collect()
         } else if let Some(q) = p.query.as_deref().filter(|q| !q.trim().is_empty()) {
@@ -584,16 +587,15 @@ impl Engine {
     fn add(&self, p: DataParams) -> ApiResult {
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        let id = vault.add_entry(p.data)?;
-        commit_local_change(vault, store)?;
+        let id = commit_local_change(vault, store, false, |v| v.add_entry(p.data))?;
         Ok(json!({ "id": id.to_string() }))
     }
 
     fn update(&self, p: UpdateParams) -> ApiResult {
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        vault.update_entry(parse_id(&p.id)?, p.data)?;
-        commit_local_change(vault, store)?;
+        let id = parse_id(&p.id)?;
+        commit_local_change(vault, store, false, |v| v.update_entry(id, p.data))?;
         Ok(Value::Null)
     }
 
@@ -604,8 +606,8 @@ impl Engine {
     ) -> ApiResult {
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        f(vault, parse_id(&p.id)?)?;
-        commit_local_change(vault, store)?;
+        let id = parse_id(&p.id)?;
+        commit_local_change(vault, store, false, |v| f(v, id))?;
         Ok(Value::Null)
     }
 
@@ -673,11 +675,7 @@ impl Engine {
             return Err(ApiError::new("invalid_data", "not a KeyRoam backup file"));
         };
         let before = vault.entries().count();
-        let changed = vault.merge_state(&state)?;
-        if changed {
-            store.save_vault(&vault.to_local_file()?, true)?;
-            commit_local_change(vault, store)?;
-        }
+        let changed = commit_local_change(vault, store, true, |v| v.merge_state(&state))?;
         Ok(json!({ "before": before, "after": vault.entries().count(), "changed": changed }))
     }
 
@@ -686,9 +684,11 @@ impl Engine {
         let new = Zeroizing::new(p.new);
         let mut s = lock(&self.session);
         let (vault, store) = Self::unlocked(&mut s)?;
-        vault.change_password(&current, &new, self.kdf_cost)?;
-        store.save_vault(&vault.to_local_file()?, true)?;
-        commit_local_change(vault, store)?;
+        if !vault.verify_password(&current) {
+            return Err(keyroam_core::Error::WrongPassword.into());
+        }
+        // Argon2 for the new password runs once, under the data-directory lock.
+        commit_local_change(vault, store, true, |v| v.change_password(&current, &new, self.kdf_cost))?;
         Ok(Value::Null)
     }
 }

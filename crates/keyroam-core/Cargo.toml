@@ -3,6 +3,7 @@ name = "keyroam-core"
 description = "KeyRoam encrypted vault engine: key derivation, authenticated encryption, vault model and conflict-free merge."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
