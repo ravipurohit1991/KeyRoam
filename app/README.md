@@ -73,3 +73,21 @@ flutter test
 - **Auto-lock** after 5 min of inactivity.
 - **Copied passwords** are cleared from the clipboard after 30 s, provided the
   clipboard still holds them.
+
+## Mobile builds (Android, iOS)
+
+The same app builds for Android and iOS. The build hook cross-compiles the
+Rust engine for each target. You need these Rust targets:
+
+```sh
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android   # Android
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim                              # iOS
+flutter build apk --release        # or: flutter build ios --release --no-codesign
+```
+
+Android builds need the Android NDK. Gradle installs the version Flutter
+pins on the first build.
+
+Not yet implemented on mobile: Google sign-in with the mobile OAuth client
+types, system autofill providers, and OS-scheduled background sync. These are
+milestones 6 and 7 in [../ROADMAP.md](../ROADMAP.md).

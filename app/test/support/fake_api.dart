@@ -67,7 +67,7 @@ class FakeKeyRoamApi implements KeyRoamApi {
   @override
   Future<String> generatePassword(GeneratorOptions options) async => 'G' * options.length;
   @override
-  Future<String> defaultBackupPath() async => 'backup.krbackup';
+  Future<String> defaultBackupPath({String? dir}) async => 'backup.krbackup';
 
   @override
   Future<SignInStart> beginSignIn() async {

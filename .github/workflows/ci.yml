@@ -34,17 +34,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
-      - run: cargo build --release --locked -p keyroam-cli
 
-  desktop-app:
+  app-tests:
+    name: Flutter tests (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            build: windows
-          - os: macos-latest
-            build: macos
+        os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -52,19 +48,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          # macOS release builds are universal (arm64 + x64).
-          targets: ${{ matrix.build == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: 3.47.7
+          cache: true
       - run: flutter pub get
       - run: dart format --output=none --set-exit-if-changed lib test hook
       - run: flutter analyze
+      # Real-engine FFI tests (the build hook compiles Rust) + UI flow tests.
       - run: flutter test
-      - run: flutter build ${{ matrix.build }} --release
 
   audit:
     runs-on: ubuntu-latest

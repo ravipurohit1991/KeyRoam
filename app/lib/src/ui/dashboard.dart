@@ -56,7 +56,13 @@ class Dashboard extends StatelessWidget {
     final state = controller.state!;
     return Scaffold(
       appBar: AppBar(
-        title: const Row(children: [Icon(Icons.key_rounded), SizedBox(width: 8), Text('KeyRoam')]),
+        title: const Row(
+          children: [
+            Icon(Icons.key_rounded),
+            SizedBox(width: 8),
+            Flexible(child: Text('KeyRoam', overflow: TextOverflow.ellipsis)),
+          ],
+        ),
         actions: [
           SyncStatusChip(controller: controller),
           const SizedBox(width: 4),
@@ -154,6 +160,16 @@ class SyncStatusChip extends StatelessWidget {
             'error' => (Icons.error_outline, 'Sync error', scheme.error, s.sync.message ?? 'Sync failed'),
             _ => (Icons.cloud_queue, 'Not synced yet', scheme.outline, 'Never synchronised'),
           };
+    if (MediaQuery.sizeOf(context).width < 600) {
+      // Phones: icon only; details in the tooltip.
+      return Tooltip(
+        message: '$label. $tip',
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Icon(icon, key: const Key('syncStatus'), color: color),
+        ),
+      );
+    }
     return Tooltip(
       message: tip,
       child: Chip(

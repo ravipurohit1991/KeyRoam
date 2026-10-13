@@ -271,7 +271,15 @@ impl Engine {
                 Ok(Value::Null)
             }
             "generate_password" => self.generate(params(p)?),
-            "default_backup_path" => Ok(json!(default_backup_path())),
+            "default_backup_path" => {
+                #[derive(Deserialize)]
+                struct P {
+                    #[serde(default)]
+                    dir: Option<String>,
+                }
+                let p: P = params(p)?;
+                Ok(json!(default_backup_path(p.dir)))
+            }
             "begin_sign_in" => self.begin_sign_in(),
             "complete_sign_in" => self.complete_sign_in(),
             "cancel_sign_in" => {
@@ -685,8 +693,11 @@ impl Engine {
     }
 }
 
-fn default_backup_path() -> String {
-    let dir = dirs::document_dir()
+fn default_backup_path(dir: Option<String>) -> String {
+    let dir = dir
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::document_dir)
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."));
     let (y, m, d) = civil_date(keyroam_core::now_millis() / 86_400_000);

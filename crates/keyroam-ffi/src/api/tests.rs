@@ -286,6 +286,8 @@ fn sign_out_and_generator() {
         .as_str()
         .unwrap()
         .ends_with(".krbackup"));
+    let custom = a.ok("default_backup_path", json!({ "dir": "custom-dir" }));
+    assert!(custom.as_str().unwrap().starts_with("custom-dir"));
 }
 
 #[test]

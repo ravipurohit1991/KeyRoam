@@ -241,4 +241,29 @@ void main() {
     expect(find.textContaining('Exported 0 entries'), findsOneWidget);
     await finish(tester, c);
   });
+
+  testWidgets('phone-sized screen: list and detail without overflow', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final api = FakeKeyRoamApi(hasVault: true)..signedIn = true;
+    api.seed(
+      const EntryData(title: 'A rather long login title for a small phone screen', username: 'user@example.test'),
+    );
+    final c = AppController(api, timings: fastTimings);
+    await c.init();
+    await tester.pumpWidget(KeyRoamApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('syncStatus')), findsOneWidget);
+    await tester.tap(find.textContaining('A rather long'));
+    await tester.pumpAndSettle();
+    expect(find.text('All logins'), findsOneWidget);
+    await tester.tap(find.text('All logins'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('search')), findsOneWidget);
+    await finish(tester, c);
+  });
 }

@@ -58,7 +58,11 @@ class AppController extends ChangeNotifier {
     return s.unlocked ? Phase.unlocked : Phase.locked;
   }
 
-  Future<void> init({String? dataDir}) async {
+  /// Folder suggested for backup exports (null: engine default).
+  String? backupDir;
+
+  Future<void> init({String? dataDir, String? backupDir}) async {
+    this.backupDir = backupDir;
     try {
       state = await api.open(dataDir: dataDir);
     } on KeyRoamException catch (e) {

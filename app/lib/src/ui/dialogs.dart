@@ -369,7 +369,7 @@ class _ActionDialogState extends State<_ActionDialog> {
 }
 
 Future<String?> showExportDialog(BuildContext context, AppController c) async {
-  final path = await c.api.defaultBackupPath();
+  final path = await c.api.defaultBackupPath(dir: c.backupDir);
   if (!context.mounted) return null;
   return showDialog<String>(
     context: context,

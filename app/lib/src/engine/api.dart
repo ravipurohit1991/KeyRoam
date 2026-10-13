@@ -23,7 +23,7 @@ abstract class KeyRoamApi {
   Future<AppState> state();
   Future<void> checkPassword(String password);
   Future<String> generatePassword(GeneratorOptions options);
-  Future<String> defaultBackupPath();
+  Future<String> defaultBackupPath({String? dir});
 
   // Google sign-in (desktop loopback flow).
   Future<SignInStart> beginSignIn();
@@ -81,7 +81,7 @@ class NativeKeyRoamApi implements KeyRoamApi {
   Future<String> generatePassword(GeneratorOptions options) async =>
       await _call('generate_password', options.toJson()) as String;
   @override
-  Future<String> defaultBackupPath() async => await _call('default_backup_path') as String;
+  Future<String> defaultBackupPath({String? dir}) async => await _call('default_backup_path', {'dir': dir}) as String;
 
   @override
   Future<SignInStart> beginSignIn() async {

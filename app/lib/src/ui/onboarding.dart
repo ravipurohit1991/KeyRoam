@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app/controller.dart';
+import '../app/platform_paths.dart';
 import '../engine/api.dart';
 import '../engine/models.dart';
 import 'common.dart';
@@ -316,7 +317,10 @@ class _GoogleSignInStepState extends State<GoogleSignInStep> {
   Future<void> _start() async {
     setState(() => _error = null);
     try {
-      final start = await widget.api.beginSignIn();
+      var start = await widget.api.beginSignIn();
+      if (!start.browserOpened && await PlatformPaths.openUrl(start.url)) {
+        start = SignInStart(start.url, true);
+      }
       if (!mounted) return;
       setState(() => _pending = start);
       final state = await widget.api.completeSignIn();

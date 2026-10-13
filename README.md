@@ -26,8 +26,8 @@ Google Drive), every device.
 | 3 | Encrypted Google Drive sync | ✅ Done: `keyroam-sync::engine` / `drive`, with tests |
 | 4 | Windows and macOS desktop apps (Flutter) | ✅ Done: `app/` + `keyroam-ffi`, with tests (macOS built in CI only) |
 | 5 | Desktop browser autofill extension | ⏳ Next |
-| 6 | Android app + Credential Manager provider | Planned |
-| 7 | iOS app + AutoFill Credential Provider extension | Planned |
+| 6 | Android app + Credential Manager provider | 🔨 App builds in CI (APK/AAB); sign-in & autofill pending |
+| 7 | iOS app + AutoFill Credential Provider extension | 🔨 App builds in CI (unsigned); sign-in & autofill pending |
 | 8 | Cross-device tests, security review, packaging | Planned |
 
 The desktop app (`app/`) and the command-line client (`keyroam`) share the
@@ -50,6 +50,25 @@ docs/
   sync-protocol.md      The Drive file layout and merge protocol
   google-cloud-setup.md Creating the Google OAuth client
 ```
+
+## Downloads (CI builds)
+
+The [Build apps](.github/workflows/build.yml) workflow builds every app on
+each push to `main`. You can download them from the run page under
+**Actions → Build apps → Artifacts**:
+
+| Artifact | Contents |
+|---|---|
+| `KeyRoam-windows-x64` | Windows app (zip; run `keyroam.exe`) |
+| `KeyRoam-macos-universal` | macOS app, Apple silicon and Intel (unsigned) |
+| `KeyRoam-android` | `KeyRoam-android.apk` and `.aab` (signed with a debug key) |
+| `KeyRoam-ios-unsigned` | Unsigned `.ipa`. It needs re-signing before it can be installed |
+| `keyroam-cli-*` | Command-line client for Linux, Windows and macOS |
+
+Pushing a tag such as `v0.2.0` publishes the same files as a GitHub
+pre-release. To embed a Google OAuth client into the desktop apps and the
+CLI, add the repository secrets `KEYROAM_GOOGLE_CLIENT_ID` and
+`KEYROAM_GOOGLE_CLIENT_SECRET`.
 
 ## Build and test
 

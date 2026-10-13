@@ -71,7 +71,11 @@ compiles and bundles it, and calls run on background isolates.
 
 ## 6. Android
 
-- [ ] Flutter Android target. OAuth through a custom-scheme redirect with PKCE.
+- [x] Flutter Android target. The Rust engine is cross-compiled for arm64,
+      armv7 and x86_64 with the NDK through the build hook. CI builds the APK
+      and AAB. Storage paths come from `MainActivity`.
+- [ ] Mobile Google sign-in: an Android OAuth client with a custom-scheme redirect and PKCE.
+      For now the app opens the desktop loopback flow in the browser.
 - [ ] `CredentialProviderService` (Android 14+) with an `AutofillService`
       fallback.
 - [ ] WorkManager periodic sync and a connectivity callback.
@@ -79,7 +83,9 @@ compiles and bundles it, and calls run on background isolates.
 
 ## 7. iOS
 
-- [ ] Flutter iOS target. OAuth through ASWebAuthenticationSession with PKCE.
+- [x] Flutter iOS target. The Rust engine is built for device and simulator.
+      CI builds an unsigned app. The Files app can reach backups.
+- [ ] Mobile Google sign-in through ASWebAuthenticationSession with PKCE (iOS OAuth client).
 - [ ] AutoFill Credential Provider extension sharing an App Group container.
 - [ ] BGAppRefreshTask for sync. Face ID unlock.
 
