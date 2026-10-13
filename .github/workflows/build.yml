@@ -227,19 +227,25 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-      - name: Name CLI binaries
+      - name: Collect release files
         run: |
+          mkdir release
+          # Apps: each artifact folder already holds its final file(s).
+          cp dist/KeyRoam-*/* release/
+          # CLI: Windows as .exe, Linux/macOS as .tar.gz (keeps the executable bit).
+          # The CLI artifacts also hold keyroam-native-host (browser extension helper).
           for d in dist/keyroam-cli-*; do
             platform=${d#dist/keyroam-cli-}
-            for f in "$d"/*; do
-              ext=""; [[ "$f" == *.exe ]] && ext=".exe"
-              base=$(basename "$f" .exe)
-              [[ "$base" == keyroam ]] && base=keyroam-cli
-              mv "$f" "dist/$base-$platform$ext"
-            done
-            rmdir "$d"
+            if [ -f "$d/keyroam.exe" ]; then
+              cp "$d/keyroam.exe" "release/keyroam-cli-$platform.exe"
+              cp "$d/keyroam-native-host.exe" "release/keyroam-native-host-$platform.exe"
+            else
+              chmod +x "$d/keyroam" "$d/keyroam-native-host"
+              tar -czf "release/keyroam-cli-$platform.tar.gz" -C "$d" keyroam keyroam-native-host
+            fi
           done
-          find dist -type f | sort
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          ls -l release
       - uses: softprops/action-gh-release@v2
         with:
           prerelease: true
@@ -247,4 +253,4 @@ jobs:
           body: |
             Pre-release build. **Use only synthetic passwords** until KeyRoam has passed its security review.
             The macOS and iOS builds are not signed or notarised; the Android build is signed with a debug key.
-          files: dist/**/*
+          files: release/*
