@@ -34,8 +34,7 @@ Create credentials → OAuth client ID**:
 | Platform | Application type | Notes |
 |---|---|---|
 | Windows / macOS / CLI | **Desktop app** | Uses a loopback redirect (`http://127.0.0.1:<port>`). Google issues a client secret, but for desktop apps it is not treated as confidential. |
-| Android (milestone 6) | **Android** | Needs the package name and the SHA-1 of the signing certificate. |
-| iOS (milestone 7) | **iOS** | Needs the bundle id. Uses the reversed client id as a custom URL scheme. |
+| Android and iOS | **iOS** (recommended), or **Android** with *Custom URI scheme* enabled under *Advanced settings* | No client secret. Google redirects to the reversed client id, `com.googleusercontent.apps.<id>:/oauth2redirect`. For an iOS client, use the bundle id `io.github.ravipurohit1991.keyroam`. An Android client also needs the package name and the SHA-1 of the signing certificate. |
 
 ## 4. Configure KeyRoam
 
@@ -55,6 +54,21 @@ $env:KEYROAM_GOOGLE_CLIENT_SECRET = "GOCSPX-..."
 
 Release builds embed these values at compile time. The same variable names are
 read by `option_env!` during `cargo build`, so end users never have to set them.
+
+The Android app uses the mobile client instead. Its id must be known when the
+app is built, because the Rust engine embeds it and Gradle registers its
+reversed id as the sign-in redirect scheme. Put it in `app/pubspec.yaml`:
+
+```yaml
+hooks:
+  user_defines:
+    keyroam:
+      google_mobile_client_id: "1234567890-def.apps.googleusercontent.com"
+```
+
+CI does this from the `KEYROAM_GOOGLE_MOBILE_CLIENT_ID` repository secret.
+Without a mobile client, the Android app falls back to the desktop loopback
+flow.
 
 Then run `keyroam init` (new user) or `keyroam join` (another device).
 

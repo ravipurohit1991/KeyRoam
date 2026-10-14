@@ -15,4 +15,8 @@
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
         <item name="android:windowBackground">?android:colorBackground</item>
     </style>
+    <!-- The unlock dialog shown for autofill and Credential Manager requests. -->
+    <style name="UnlockTheme" parent="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
+    <!-- Invisible activity that receives the Google sign-in redirect. -->
+    <style name="RedirectTheme" parent="@android:style/Theme.Translucent.NoTitleBar" />
 </resources>

@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod android;
 pub mod bridge;
 pub mod framing;
 pub mod install;

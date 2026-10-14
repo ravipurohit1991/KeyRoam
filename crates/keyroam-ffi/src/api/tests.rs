@@ -472,3 +472,222 @@ fn browser_integration_serves_the_extension_only_while_unlocked() {
         "not_found"
     );
 }
+
+/// A device with a vault holding one web login and one app login.
+fn android_device() -> (Device, Shared) {
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    for (title, user, pw, url) in [
+        ("Example", "alice", "synthetic-web", "https://www.example.com"),
+        ("Example app", "bob", "synthetic-app", "androidapp://com.example.app"),
+    ] {
+        a.ok(
+            "add_entry",
+            json!({ "data": { "title": title, "username": user, "password": pw, "urls": [url] } }),
+        );
+    }
+    (a, remote)
+}
+
+#[test]
+fn reopening_the_same_folder_keeps_the_session() {
+    let (a, _remote) = android_device();
+    let dir = a.ok("state", json!({}))["data_dir"].as_str().unwrap().to_string();
+    // e.g. the Android autofill service unlocked before the UI opened.
+    let st = a.ok("open", json!({ "data_dir": dir }));
+    assert_eq!(st["unlocked"], true);
+    // Another folder starts a new session.
+    let other = tempfile::tempdir().unwrap();
+    let st = a.ok("open", json!({ "data_dir": other.path().to_str().unwrap() }));
+    assert_eq!(st["unlocked"], false);
+    assert_eq!(st["has_vault"], false);
+}
+
+#[test]
+fn biometric_key_unlocks_until_the_password_changes() {
+    let (a, _remote) = android_device();
+    assert_eq!(
+        a.err("biometric_key", json!({ "password": "wrong-password-xyz" })),
+        "wrong_password"
+    );
+    let key = a.ok("biometric_key", json!({ "password": PW }));
+    let kek = key["key"].as_str().unwrap().to_string();
+    assert_eq!(key["vault_id"], a.ok("state", json!({}))["vault_id"]);
+
+    a.ok("lock", json!({}));
+    let st = a.ok("unlock_with_key", json!({ "key": kek }));
+    assert_eq!(st["unlocked"], true);
+    assert_eq!(st["signed_in"], true);
+    assert_eq!(st["entry_count"], 2);
+
+    assert_eq!(
+        a.err("unlock_with_key", json!({ "key": "not base64!" })),
+        "invalid_input"
+    );
+    assert_eq!(a.err("unlock_with_key", json!({ "key": "AAAA" })), "invalid_input");
+
+    // A master-password change makes the stored key useless.
+    a.ok("change_password", json!({ "current": PW, "new": "new-synthetic-pw-2" }));
+    a.ok("lock", json!({}));
+    assert_eq!(a.err("unlock_with_key", json!({ "key": kek })), "wrong_password");
+}
+
+#[test]
+fn android_autofill_lists_and_releases_only_matching_logins() {
+    let (a, _remote) = android_device();
+    let login_screen = json!([{ "input_type": 0x21 }, { "input_type": 0x81 }]);
+
+    let r = a.ok(
+        "android_logins",
+        json!({ "package": "com.android.chrome", "web_domain": "login.example.com", "fields": login_screen }),
+    );
+    assert_eq!(r["state"], "unlocked");
+    assert_eq!(r["target"], json!({ "kind": "web", "label": "example.com" }));
+    assert_eq!(
+        r["fields"],
+        json!({ "username": 0, "password": 1, "new_password": null })
+    );
+    assert_eq!(r["logins"].as_array().unwrap().len(), 1);
+    assert_eq!(r["logins"][0]["password"], "synthetic-web");
+
+    let r = a.ok(
+        "android_logins",
+        json!({ "package": "com.example.app", "fields": login_screen }),
+    );
+    assert_eq!(r["logins"][0]["username"], "bob");
+
+    // An app that claims a web domain only sees its own logins.
+    let r = a.ok(
+        "android_logins",
+        json!({ "package": "com.evil.phish", "web_domain": "www.example.com", "fields": login_screen }),
+    );
+    assert_eq!(r["target"]["kind"], "app");
+    assert!(r["logins"].as_array().unwrap().is_empty());
+
+    // A screen without login fields.
+    let r = a.ok(
+        "android_logins",
+        json!({ "package": "com.example.app", "fields": [{ "input_type": 2 }] }),
+    );
+    assert_eq!(r["fields"], Value::Null);
+
+    // Credential Manager: pick one by id; another app cannot.
+    let id = a.ok("android_logins", json!({ "package": "com.example.app" }))["logins"][0]["id"].clone();
+    let c = a.ok("android_credential", json!({ "package": "com.example.app", "id": id }));
+    assert_eq!(c, json!({ "username": "bob", "password": "synthetic-app" }));
+    assert_eq!(
+        a.err("android_credential", json!({ "package": "com.other.app", "id": id })),
+        "not_found"
+    );
+    assert_eq!(
+        a.err("android_logins", json!({ "package": "not a package" })),
+        "invalid_input"
+    );
+
+    // Locked: fields only, no logins.
+    a.ok("lock", json!({}));
+    let r = a.ok(
+        "android_logins",
+        json!({ "package": "com.example.app", "fields": login_screen }),
+    );
+    assert_eq!(r["state"], "locked");
+    assert!(r["logins"].as_array().unwrap().is_empty());
+    assert_eq!(r["fields"]["password"], 1);
+    assert_eq!(
+        a.err("android_credential", json!({ "package": "com.example.app", "id": id })),
+        "locked"
+    );
+}
+
+#[test]
+fn android_save_creates_updates_and_notifies_the_ui() {
+    let (a, _remote) = android_device();
+    let rev = |a: &Device| a.ok("state", json!({}))["revision"].as_u64().unwrap();
+    let before = rev(&a);
+    let fields =
+        |user: &str, pw: &str| json!([{ "input_type": 0x21, "value": user }, { "input_type": 0x81, "value": pw }]);
+
+    let r = a.ok(
+        "android_save",
+        json!({ "package": "com.new.app", "app_label": "New App", "fields": fields("carol", "synthetic-1") }),
+    );
+    assert_eq!(r["result"], "created");
+    assert_eq!(rev(&a), before + 1);
+    let r = a.ok(
+        "android_save",
+        json!({ "package": "com.new.app", "fields": fields("carol", "synthetic-1") }),
+    );
+    assert_eq!(r["result"], "unchanged");
+    // Credential Manager passes the login directly.
+    let r = a.ok(
+        "android_save",
+        json!({ "package": "com.new.app", "username": "carol", "password": "synthetic-2" }),
+    );
+    assert_eq!(r["result"], "updated");
+    let listed = a.ok("list_entries", json!({ "query": "New App" }));
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    let entry = a.ok("get_entry", json!({ "id": r["id"] }));
+    assert_eq!(entry["versions"][0]["data"]["password"], "synthetic-2");
+    assert_eq!(entry["versions"][0]["data"]["urls"][0], "androidapp://com.new.app");
+    // Saved to disk and queued for sync.
+    assert_eq!(a.ok("state", json!({}))["sync"]["pending_upload"], true);
+
+    // A browser's save is titled with the site, not the browser's name.
+    let r = a.ok(
+        "android_save",
+        json!({ "package": "com.android.chrome", "web_domain": "shop.example.org", "app_label": "Chrome",
+                "fields": fields("erin", "synthetic-4") }),
+    );
+    let entry = a.ok("get_entry", json!({ "id": r["id"] }));
+    assert_eq!(entry["versions"][0]["data"]["title"], "example.org");
+    assert_eq!(entry["versions"][0]["data"]["urls"][0], "https://shop.example.org");
+
+    assert_eq!(
+        a.err(
+            "android_save",
+            json!({ "package": "com.new.app", "fields": fields("carol", "") })
+        ),
+        "invalid_input"
+    );
+    a.ok("lock", json!({}));
+    assert_eq!(
+        a.err(
+            "android_save",
+            json!({ "package": "com.new.app", "fields": fields("dave", "synthetic-3") })
+        ),
+        "locked"
+    );
+}
+
+#[test]
+fn background_sync_only_runs_unlocked() {
+    let (a, remote) = android_device();
+    let r = a.ok("sync_if_unlocked", json!({}));
+    assert_eq!(r["synced"], true);
+    a.ok("lock", json!({}));
+    assert_eq!(a.ok("sync_if_unlocked", json!({}))["synced"], false);
+    drop(remote);
+}
+
+#[test]
+fn mobile_sign_in_needs_a_mobile_client() {
+    let a = Device::new();
+    // The redirect slot accepts deliveries at any time (stale ones are
+    // discarded when a sign-in begins).
+    a.ok(
+        "oauth_redirect",
+        json!({ "url": "com.googleusercontent.apps.x:/oauth2redirect?state=s" }),
+    );
+    assert_eq!(
+        a.err("begin_sign_in", json!({ "redirect": "carrier-pigeon" })),
+        "invalid_request"
+    );
+    if keyroam_sync::OAuthClientConfig::mobile_from_env().is_err() {
+        assert_eq!(
+            a.err("begin_sign_in", json!({ "redirect": "custom" })),
+            "not_configured"
+        );
+    }
+}

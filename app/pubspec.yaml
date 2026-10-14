@@ -1,7 +1,7 @@
 name: keyroam
 description: "KeyRoam password manager: your keys, wherever you go."
 publish_to: 'none'
-version: 0.2.0+2
+version: 0.3.0+3
 
 environment:
   sdk: ^3.13.5

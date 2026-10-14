@@ -72,7 +72,16 @@ impl Vault {
 
     /// Unlock this device's local vault file.
     pub fn open(file: &LocalVaultFile, password: &str) -> Result<Vault> {
-        let key = file.header.unlock(password)?;
+        Self::open_with_key(file, file.header.unlock(password)?)
+    }
+
+    /// Unlock this device's local vault file with a key-encryption key from
+    /// [`VaultHeader::derive_kek`] (biometric unlock).
+    pub fn open_with_kek(file: &LocalVaultFile, kek: &SecretKey) -> Result<Vault> {
+        Self::open_with_key(file, file.header.unlock_with_kek(kek)?)
+    }
+
+    fn open_with_key(file: &LocalVaultFile, key: SecretKey) -> Result<Vault> {
         let previous = file.header.previous_keys(&key)?;
         let state: VaultState = open_json(&key, &local_ctx(file.header.vault_id, file.device_id), &file.payload)?;
         state.validate()?;

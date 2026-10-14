@@ -754,3 +754,122 @@ class _CsvImportDialogState extends State<_CsvImportDialog> {
     );
   }
 }
+
+/// Turn biometric unlock on (asks for the master password) or off.
+Future<String?> showBiometricDialog(BuildContext context, AppController c) async {
+  final bio = c.biometrics;
+  if (bio.enabled) {
+    final off = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Biometric unlock'),
+        content: const Text('Biometric unlock is on. Turn it off? You can still unlock with your master password.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep on')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Turn off')),
+        ],
+      ),
+    );
+    if (off == true) await c.setBiometricUnlock(false);
+    return null;
+  }
+  if (!bio.available) {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Biometric unlock'),
+        content: const Text(
+          'This device has no fingerprint or face unlock set up. Add one in the system settings, then try again.',
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+      ),
+    );
+    return null;
+  }
+  if (!context.mounted) return null;
+  return showDialog<String>(
+    context: context,
+    builder: (_) => _ActionDialog(
+      title: 'Turn on biometric unlock',
+      description:
+          'Unlock KeyRoam with your fingerprint or face. The key is kept in this device\'s secure hardware and '
+          'stops working when you change your master password or your enrolled biometrics.',
+      action: 'Turn on',
+      passwordLabels: const ['Master password'],
+      run: (_, pw) async {
+        await c.setBiometricUnlock(true, password: pw[0]);
+        return 'Biometric unlock is on';
+      },
+    ),
+  );
+}
+
+/// Android autofill and Credential Manager: status and links to the system settings.
+Future<void> showAndroidAutofillDialog(BuildContext context, AppController c) async {
+  final m = c.mobile!;
+  var status = await m.autofillStatus();
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setState) {
+        Future<void> refresh() async {
+          final s = await m.autofillStatus();
+          setState(() => status = s);
+        }
+
+        return AlertDialog(
+          title: const Text('Autofill'),
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'KeyRoam can fill your logins in apps and browsers. Apps see only logins saved for them; '
+                    'browsers see only logins for the site you are on, and only while KeyRoam is unlocked.',
+                  ),
+                  const SizedBox(height: 12),
+                  ListTile(
+                    key: const Key('autofillService'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(status.autofillEnabled ? Icons.check_circle : Icons.radio_button_unchecked),
+                    title: const Text('Autofill service'),
+                    subtitle: Text(
+                      !status.autofillSupported
+                          ? 'Not available on this device'
+                          : status.autofillEnabled
+                          ? 'KeyRoam is your autofill service'
+                          : 'Choose KeyRoam as your autofill service',
+                    ),
+                    trailing: status.autofillSupported
+                        ? TextButton(
+                            onPressed: () async {
+                              await m.openAutofillSettings();
+                              await refresh();
+                            },
+                            child: const Text('Settings'),
+                          )
+                        : null,
+                  ),
+                  if (status.credentialProviderSupported)
+                    ListTile(
+                      key: const Key('credentialProvider'),
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.key_outlined),
+                      title: const Text('Passwords & accounts'),
+                      subtitle: const Text('Offer KeyRoam in the sign-in sheet of apps (Android 14+)'),
+                      trailing: TextButton(onPressed: m.openCredentialSettings, child: const Text('Settings')),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close'))],
+        );
+      },
+    ),
+  );
+}

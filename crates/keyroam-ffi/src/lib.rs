@@ -7,7 +7,11 @@
 //! * `keyroam_free_string(response)` wipes and frees a response.
 //!
 //! Calls block (Argon2, network), so Dart invokes them from background isolates.
+//!
+//! On Android, Kotlin reaches the same engine through JNI (`android.rs`).
 
+#[cfg(target_os = "android")]
+mod android;
 pub mod api;
 
 use std::ffi::{c_char, CStr, CString};

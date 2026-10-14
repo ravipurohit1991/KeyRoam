@@ -84,6 +84,18 @@ process-wide `Engine` holds the open vault. Long Google sign-in waits run
 without holding the session lock, so they can be cancelled. The Flutter app
 builds and bundles this library through `app/hook/build.dart`.
 
+### Android (`app/android`)
+
+Kotlin code in the app module calls the engine through a JNI entry point in
+`keyroam-ffi` (`android.rs`). It is the same native library and the same
+process-wide `Engine` the Flutter UI uses through Dart FFI, so the system
+services and the UI share one session. The services are the autofill service,
+the Credential Manager provider (Android 14+), the unlock activity for both,
+biometric unlock, WorkManager sync and the sign-in redirect activity. The
+`android_*` engine methods answer them, with the matching and field rules of
+`keyroam_autofill::android`. When the vault changes outside the UI, Kotlin
+tells the UI over the `keyroam/platform` channel, and the UI refreshes.
+
 ### `keyroam-cli`
 
 The reference front-end and the runnable deliverable for milestones 1–3. Every
@@ -93,6 +105,5 @@ operation the GUI apps will offer is available here first.
 
 | Milestone | Component | Notes |
 |---|---|---|
-| 6 | Android `CredentialProviderService` (Credential Manager, Android 14+) with an `AutofillService` fallback | Sync through WorkManager. OAuth through a custom-scheme redirect with PKCE. |
 | 7 | iOS `ASCredentialProviderViewController` extension | A shared App Group container for the encrypted vault, unlocked with the master password or Face ID. The key is wrapped in a Keychain item limited to biometry. Sync through BGAppRefreshTask. |
 | 8 | Cross-device test matrix, external security review, signed installers (MSIX, notarised DMG, Play, App Store) | |

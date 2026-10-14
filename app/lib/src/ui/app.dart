@@ -14,19 +14,26 @@ class KeyRoamApp extends StatefulWidget {
   State<KeyRoamApp> createState() => _KeyRoamAppState();
 }
 
-class _KeyRoamAppState extends State<KeyRoamApp> {
+class _KeyRoamAppState extends State<KeyRoamApp> with WidgetsBindingObserver {
   final _messenger = GlobalKey<ScaffoldMessengerState>();
 
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_showNotice);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller.removeListener(_showNotice);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) widget.controller.appResumed();
   }
 
   void _showNotice() {
