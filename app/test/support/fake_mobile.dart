@@ -1,4 +1,4 @@
-// Stand-in for the Android integrations (MainActivity's platform channel),
+// Stand-in for the Android and iOS integrations (the platform channel),
 // used by widget tests. Biometric unlock opens the fake engine's vault.
 
 import 'package:keyroam/src/app/mobile_platform.dart';
@@ -14,6 +14,7 @@ class FakeMobilePlatform implements MobilePlatform {
   bool available = true;
   bool enabled = false;
   bool autofillEnabled = false;
+  bool ios = false;
   final calls = <String>[];
   void Function()? _vaultChanged;
   void Function()? _online;
@@ -55,10 +56,11 @@ class FakeMobilePlatform implements MobilePlatform {
   Future<void> syncWhenOnline() async => calls.add('syncWhenOnline');
 
   @override
-  Future<AndroidAutofillStatus> autofillStatus() async => AndroidAutofillStatus(
+  Future<AutofillStatus> autofillStatus() async => AutofillStatus(
     autofillSupported: true,
     autofillEnabled: autofillEnabled,
-    credentialProviderSupported: true,
+    credentialProviderSupported: !ios,
+    ios: ios,
   );
 
   @override
@@ -73,6 +75,9 @@ class FakeMobilePlatform implements MobilePlatform {
     calls.add('openCredentialSettings');
     return true;
   }
+
+  @override
+  Future<void> credentialsChanged() async => calls.add('credentialsChanged');
 
   @override
   void listen({required void Function() onVaultChanged, required void Function() onOnline}) {

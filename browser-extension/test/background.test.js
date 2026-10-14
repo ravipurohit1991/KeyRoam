@@ -6,7 +6,7 @@ import { Background, SAVE_TTL_MS } from '../src/lib/background-core.js';
 const EXT = 'chrome-extension://ext-id/';
 const TAB = { id: 5, url: 'https://login.example.com/signin' };
 
-function fakeApi({ tab = TAB, fillResult = { filled: true } } = {}) {
+function fakeApi({ tab = TAB, fillResult = { filled: true }, onReport = null } = {}) {
   const session = new Map();
   const toTabs = [];
   const badges = [];
@@ -16,6 +16,7 @@ function fakeApi({ tab = TAB, fillResult = { filled: true } } = {}) {
       query: async () => (tab ? [tab] : []),
       sendMessage: async (tabId, msg, opts) => {
         toTabs.push({ tabId, msg, frameId: opts?.frameId });
+        if (msg.type === 'report_forms') return onReport ? onReport(tabId) : null;
         return msg.type.startsWith('fill') ? fillResult : {};
       },
     },
@@ -125,7 +126,7 @@ test('nothing is filled when KeyRoam refuses or no form exists', async () => {
   const api = fakeApi();
   const bg = new Background({ api, client: app({ credential: () => ({ error: { code: 'locked', message: 'locked' } }) }) });
   assert.equal((await bg.onMessage({ type: 'fill', id: 'e1' }, popup)).error.code, 'locked');
-  assert.equal(api.toTabs.length, 0);
+  assert.deepEqual(api.toTabs.filter((t) => t.msg.type.startsWith('fill')), []);
 
   const noForm = fakeApi({ fillResult: { filled: false } });
   const bg2 = new Background({ api: noForm, client: app() });
@@ -247,4 +248,23 @@ test('closing a tab forgets its frames and pending prompt', async () => {
   await bg.onTabRemoved(5);
   assert.equal(api.session.size, 0);
   assert.equal(bg.frames.has(5), false);
+});
+
+test('a suspended background asks the frames of the tab to report again', async () => {
+  let bg;
+  const api = fakeApi({
+    // Each frame answers by sending `forms`; the iframe's report may arrive late.
+    onReport: async () => {
+      await bg.onMessage({ type: 'forms', kind: 'none' }, content(0));
+      setTimeout(() => bg.onMessage({ type: 'forms', kind: 'login' }, content(7, 'https://login.example.com/frame')), 5);
+      return {};
+    },
+  });
+  bg = new Background({ api, client: app(), rediscoverMs: 30 });
+  assert.deepEqual(await bg.onMessage({ type: 'fill', id: 'e1' }, popup), { ok: true });
+  assert.equal(api.toTabs.filter((t) => t.msg.type === 'report_forms').length, 1);
+  assert.equal(api.toTabs.find((t) => t.msg.type === 'fill').frameId, 7);
+  // Known frames are not asked again.
+  await bg.onMessage({ type: 'popup_state' }, popup);
+  assert.equal(api.toTabs.filter((t) => t.msg.type === 'report_forms').length, 1);
 });

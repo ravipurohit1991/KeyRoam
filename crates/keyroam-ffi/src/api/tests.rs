@@ -691,3 +691,72 @@ fn mobile_sign_in_needs_a_mobile_client() {
         );
     }
 }
+
+#[test]
+fn ios_extension_engine_shares_the_app_group_folder() {
+    // The app: a vault with a web login and an Android-only login.
+    let (app, _remote) = android_device();
+    let dir = app.ok("state", json!({}))["data_dir"].as_str().unwrap().to_string();
+    let kek = app.ok("biometric_key", json!({ "password": PW }))["key"].clone();
+
+    // The AutoFill extension: another process, so another engine, over the
+    // same folder. It starts locked.
+    let ext = Engine::with_kdf_cost(KdfCost::MINIMUM);
+    let call = |m: &str, p: Value| ext.dispatch(m, p);
+    call("open", json!({ "data_dir": dir })).unwrap();
+    let services = json!([{ "identifier": "www.example.com", "type": "domain" }]);
+    let r = call("ios_logins", json!({ "services": services })).unwrap();
+    assert_eq!(r["state"], "locked");
+    assert_eq!(r["label"], "example.com");
+    assert!(r["logins"].as_array().unwrap().is_empty());
+    assert_eq!(call("ios_identities", json!({})).unwrap_err().code, "locked");
+
+    // Face ID releases the key-encryption key from the shared keychain.
+    assert_eq!(
+        call("unlock_with_key", json!({ "key": kek })).unwrap()["unlocked"],
+        true
+    );
+    let r = call("ios_logins", json!({ "services": services })).unwrap();
+    assert_eq!(r["state"], "unlocked");
+    let logins = r["logins"].as_array().unwrap();
+    assert_eq!(logins.len(), 1);
+    assert_eq!(logins[0]["username"], "alice");
+    assert_eq!(logins[0]["match"], "exact");
+    assert!(logins[0].get("password").is_none(), "the list carries no passwords");
+
+    let id = logins[0]["id"].clone();
+    let c = call("ios_credential", json!({ "services": services, "id": id })).unwrap();
+    assert_eq!(c, json!({ "username": "alice", "password": "synthetic-web" }));
+    // Another site cannot have it, and identifiers must be usable.
+    let other = json!([{ "identifier": "https://example.org/login", "type": "url" }]);
+    assert_eq!(
+        call("ios_credential", json!({ "services": other, "id": id }))
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
+    assert_eq!(
+        call(
+            "ios_logins",
+            json!({ "services": [{ "identifier": "", "type": "domain" }] })
+        )
+        .unwrap_err()
+        .code,
+        "invalid_input"
+    );
+
+    // QuickType identities: web logins only, no secrets.
+    let ids = call("ios_identities", json!({})).unwrap();
+    assert_eq!(ids, json!([{ "id": id, "user": "alice", "domain": "www.example.com" }]));
+
+    // A login the app adds later is seen by the extension after it reloads
+    // (here: lock and unlock, as each AutoFill request does).
+    app.ok(
+        "add_entry",
+        json!({ "data": { "title": "Shop", "username": "carol", "password": "synthetic-shop", "urls": ["https://shop.example.com"] } }),
+    );
+    call("lock", json!({})).unwrap();
+    call("unlock", json!({ "password": PW })).unwrap();
+    let r = call("ios_logins", json!({ "services": services })).unwrap();
+    assert_eq!(r["logins"].as_array().unwrap().len(), 2);
+}

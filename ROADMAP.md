@@ -51,9 +51,10 @@ compiles and bundles it, and calls run on background isolates.
       connectivity returns.
 - [x] Tests: 9 Rust FFI tests; native Dart tests that run against the real
       engine; 8 widget tests of the UI flows. CI builds on Windows and macOS.
-- [ ] Native file picker for backups (`file_selector`). Flutter plugins need
-      Windows Developer Mode on the build machine, so this is deferred.
-      Under the macOS sandbox, exports currently go to the app container.
+- [x] Native open and save dialogs for backups and CSV imports, served by
+      the Windows (`IFileDialog`) and macOS (`NSSavePanel`) runners without
+      Flutter plugins. Under the macOS sandbox the picked file is what the
+      app may access (`files.user-selected.read-write`).
 - [x] Advisory lock on the data directory. Every write merges what another
       KeyRoam process (such as the CLI) saved first, so no edit is lost.
 - [x] Lock when Windows locks or suspends, and when macOS locks the screen,
@@ -69,6 +70,9 @@ compiles and bundles it, and calls run on background isolates.
 
 - [x] Manifest V3 extension for Chrome, Edge, Brave, Vivaldi (service worker)
       and Firefox 115+ (background scripts), built by `browser-extension/build.mjs`.
+      The manifest declares both background forms, so the source folder and
+      either package load in Firefox; the popup asks for website access when
+      Firefox has withheld it.
 - [x] Native-messaging host bundled with the desktop app. It relays to the
       running app over a loopback bridge authenticated by a mutual HMAC
       challenge-response. The app answers only while unlocked, and only with
@@ -127,13 +131,37 @@ one unlocked vault.
       builds, and an emulator run (see the pull request).
 - [ ] Play Store release (milestone 8).
 
-## 7. iOS
+## ✅ 7. iOS
+
+`app/ios` (Swift), `crates/keyroam-autofill::ios` and the `ios_*` engine
+methods. Swift opens the engine framework the build hook bundles, so the app's
+Swift code shares the Flutter UI's engine and the AutoFill extension runs its
+own over the shared vault folder.
 
 - [x] Flutter iOS target. The Rust engine is built for device and simulator.
-      CI builds an unsigned app. The Files app can reach backups.
-- [ ] Mobile Google sign-in through ASWebAuthenticationSession with PKCE (iOS OAuth client).
-- [ ] AutoFill Credential Provider extension sharing an App Group container.
-- [ ] BGAppRefreshTask for sync. Face ID unlock.
+      CI builds an unsigned app with the extension. The Files app can reach
+      backups.
+- [x] Mobile Google sign-in in an `ASWebAuthenticationSession` (private
+      session) with PKCE and the reversed-client-id redirect of an iOS
+      OAuth client; the engine checks `state` and redeems the code.
+- [x] AutoFill Credential Provider extension. The vault lives in an App Group
+      container (an existing vault is moved there once). Each request
+      unlocks with Face ID or the master password, lists the logins of the
+      requesting site or app (matched by registrable domain from iOS's
+      service identifiers) and releases only the chosen one. QuickType
+      suggestions come from credential identities (entry id, username,
+      host; never passwords) refreshed whenever the vault changes.
+- [x] Face ID / Touch ID unlock: the KEK in a keychain item limited to the
+      current biometrics, shared with the extension. A password change or
+      key rotation turns it off.
+- [x] `BGAppRefreshTask` sync while the vault is unlocked; sync as soon as the
+      network returns (`NWPathMonitor`); lock when the device locks.
+- [x] Tests: 4 Rust tests for service identifiers, matching and identities;
+      an FFI test of the extension as a second engine over the same folder;
+      3 widget tests of the iOS flows.
+- [ ] Verified on physical devices (needs a signing team with the App Group
+      and AutoFill capabilities). So far: unit and widget tests and CI builds.
+- [ ] App Store release (milestone 8).
 
 ## 8. Release preparation
 

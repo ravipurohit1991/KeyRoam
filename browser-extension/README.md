@@ -50,8 +50,16 @@ extension ──native messaging──► keyroam-native-host ──authenticate
      gives it the fixed ID `ihplgegclknoghjpemmnfaoeogcahpba`, which the
      native host allows.
    - **Firefox:** open `about:debugging#/runtime/this-firefox`, **Load
-     Temporary Add-on…** → `dist/firefox/manifest.json`. Add-on ID
-     `keyroam@ravipurohit1991.github.io`.
+     Temporary Add-on…** → `dist/firefox/manifest.json` (or the
+     `KeyRoam-extension-firefox.zip` download). Add-on ID
+     `keyroam@ravipurohit1991.github.io`. If the popup asks for access to
+     websites, click **Allow access to websites** and reload the page:
+     Firefox lets you withhold that access, and without it KeyRoam cannot
+     see login forms.
+
+The manifest declares both a service worker (Chromium) and background
+scripts (Firefox), so `src/` and the Chromium package also load in Firefox;
+`dist/firefox` additionally runs on Firefox 115–120.
 
 A store-published build gets a store-assigned Chromium ID; register it with
 `keyroam-native-host install --extension-id <id>`.

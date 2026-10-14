@@ -19,6 +19,11 @@
 //! the Credential Manager provider, background sync and biometric unlock call
 //! it through JNI (`crate::android`). The `android_*` methods answer them,
 //! with the rules of `keyroam_autofill::android`.
+//!
+//! On iOS, Swift calls the same C functions: in the app for biometric unlock,
+//! sign-in and background sync, and in the AutoFill extension, a separate
+//! process with its own engine over the shared App Group folder. The `ios_*`
+//! methods answer the extension, with the rules of `keyroam_autofill::ios`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,6 +34,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use keyroam_autofill::android::{self as droid, Target};
 use keyroam_autofill::bridge::BridgeServer;
+use keyroam_autofill::ios;
 use keyroam_autofill::matching::SavePlan;
 use keyroam_autofill::protocol::{self, Committer};
 
@@ -369,6 +375,9 @@ impl Engine {
             "android_logins" => self.android_logins(params(p)?),
             "android_credential" => self.android_credential(params(p)?),
             "android_save" => self.android_save(params(p)?),
+            "ios_logins" => self.ios_logins(params(p)?),
+            "ios_credential" => self.ios_credential(params(p)?),
+            "ios_identities" => self.ios_identities(),
             "lock" => {
                 let mut s = lock(&self.session);
                 s.vault = None;
@@ -1035,11 +1044,7 @@ impl Engine {
             || json!({ "username": found.username, "password": found.password, "new_password": found.new_password }),
         );
         let s = lock(&self.session);
-        let state = match (&s.vault, s.store.as_ref().is_some_and(|st| st.has_vault())) {
-            (Some(_), _) => "unlocked",
-            (None, true) => "locked",
-            (None, false) => "no_vault",
-        };
+        let state = Self::vault_state(&s);
         let logins: Vec<Value> = match &s.vault {
             Some(vault) => droid::find_logins(vault, &target)
                 .into_iter()
@@ -1106,6 +1111,66 @@ impl Engine {
         })?;
         self.revision.fetch_add(1, Ordering::SeqCst);
         Ok(json!({ "result": if updated { "updated" } else { "created" }, "id": id.to_string() }))
+    }
+}
+
+#[derive(Deserialize)]
+struct IosParams {
+    /// The request's `ASCredentialServiceIdentifier`s.
+    #[serde(default)]
+    services: Vec<ios::ServiceIdentifier>,
+    #[serde(default)]
+    id: Option<String>,
+}
+
+impl Engine {
+    fn vault_state(s: &Session) -> &'static str {
+        match (&s.vault, s.store.as_ref().is_some_and(|st| st.has_vault())) {
+            (Some(_), _) => "unlocked",
+            (None, true) => "locked",
+            (None, false) => "no_vault",
+        }
+    }
+
+    /// Logins for an AutoFill request, without passwords: the extension lists
+    /// them and asks for the one the user picks with `ios_credential`.
+    fn ios_logins(&self, p: IosParams) -> ApiResult {
+        let origins = ios::service_origins(&p.services)?;
+        let s = lock(&self.session);
+        let logins: Vec<Value> = match &s.vault {
+            Some(vault) => ios::find_logins(vault, &origins)
+                .into_iter()
+                .map(|m| json!({ "id": m.id.to_string(), "title": m.title, "username": m.username, "match": m.kind.as_str() }))
+                .collect(),
+            None => Vec::new(),
+        };
+        Ok(json!({ "state": Self::vault_state(&s), "label": ios::label(&origins), "logins": logins }))
+    }
+
+    /// The login the user picked (or the one a QuickType suggestion names),
+    /// re-checked against the request's service identifiers.
+    fn ios_credential(&self, p: IosParams) -> ApiResult {
+        let origins = ios::service_origins(&p.services)?;
+        let id = parse_id(p.id.as_deref().unwrap_or_default())?;
+        let s = lock(&self.session);
+        let vault = s
+            .vault
+            .as_ref()
+            .ok_or_else(|| ApiError::new("locked", "the vault is locked"))?;
+        let data = ios::credential_for(vault, id, &origins)
+            .ok_or_else(|| ApiError::new("not_found", "this login is not saved for this website or app"))?;
+        Ok(json!({ "username": data.username, "password": data.password }))
+    }
+
+    /// Credential identities (entry id, username, domain) for iOS's
+    /// QuickType suggestions. They hold no secrets.
+    fn ios_identities(&self) -> ApiResult {
+        let s = lock(&self.session);
+        let vault = s
+            .vault
+            .as_ref()
+            .ok_or_else(|| ApiError::new("locked", "the vault is locked"))?;
+        Ok(json!(ios::identities(vault)))
     }
 }
 

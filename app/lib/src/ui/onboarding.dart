@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -324,9 +326,11 @@ class _GoogleSignInStepState extends State<GoogleSignInStep> {
       if (!mounted) return;
       setState(() => _pending = start);
       final state = await widget.api.completeSignIn();
+      unawaited(PlatformPaths.closeSignIn().catchError((_) {}));
       if (!mounted) return;
       widget.onSignedIn(state);
     } on KeyRoamException catch (e) {
+      unawaited(PlatformPaths.closeSignIn().catchError((_) {}));
       if (!mounted) return;
       setState(() {
         _pending = null;

@@ -1,6 +1,6 @@
 {
   "name": "keyroam-browser-extension",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "KeyRoam browser extension (Manifest V3, Chromium and Firefox).",
   "type": "module",

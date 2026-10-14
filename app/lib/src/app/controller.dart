@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../engine/api.dart';
 import '../engine/models.dart';
+import 'file_picker.dart';
 import 'mobile_platform.dart';
 import 'platform_paths.dart';
 
@@ -34,7 +35,7 @@ class AppTimings {
 
 /// Application state and behaviour shared by all screens.
 class AppController extends ChangeNotifier {
-  AppController(this.api, {this.timings = const AppTimings(), this.mobile});
+  AppController(this.api, {this.timings = const AppTimings(), this.mobile, this.files = const FilePicker()});
 
   final KeyRoamApi api;
   final AppTimings timings;
@@ -42,6 +43,9 @@ class AppController extends ChangeNotifier {
   /// Android integrations (biometric unlock, background sync, autofill);
   /// null on desktop.
   final MobilePlatform? mobile;
+
+  /// Native open and save dialogs (Windows, macOS).
+  final FilePicker files;
   BiometricStatus biometrics = const BiometricStatus();
 
   AppState? state;
@@ -130,7 +134,8 @@ class AppController extends ChangeNotifier {
 
   Future<void> _afterUnlock({bool syncNow = true}) async {
     await refreshEntries();
-    // Android: keep syncing in the background while the vault stays unlocked.
+    _credentialsChanged();
+    // Mobile: keep syncing in the background while the vault stays unlocked.
     unawaited(mobile?.scheduleBackgroundSync().catchError((_) {}));
     _periodic?.cancel();
     _periodic = Timer.periodic(timings.periodicSync, (_) => this.syncNow(quiet: true));
@@ -160,7 +165,7 @@ class AppController extends ChangeNotifier {
     query = '';
   }
 
-  // ----- Android -----
+  // ----- Android and iOS -----
 
   Future<void> _refreshBiometrics() async {
     try {
@@ -170,7 +175,7 @@ class AppController extends ChangeNotifier {
     }
   }
 
-  /// Unlock with fingerprint or face (Android).
+  /// Unlock with fingerprint or face (Android, iOS).
   Future<void> unlockWithBiometrics() async {
     try {
       state = await mobile!.biometricUnlock();
@@ -216,10 +221,16 @@ class AppController extends ChangeNotifier {
     } else if (now.unlocked && now.revision != _seenRevision) {
       state = now;
       await refreshEntries();
+      _credentialsChanged();
     } else {
       state = now;
       _notify();
     }
+  }
+
+  /// Tell iOS which logins to suggest (no secrets; a no-op on Android).
+  void _credentialsChanged() {
+    unawaited(mobile?.credentialsChanged().catchError((_) {}));
   }
 
   /// The app came back to the foreground.
@@ -232,7 +243,7 @@ class AppController extends ChangeNotifier {
   /// The operating system locked the screen, slept or switched user.
   Future<void> lockForSystem() async {
     if (phase != Phase.unlocked) return;
-    notice = 'Locked because the computer was locked';
+    notice = mobile == null ? 'Locked because the computer was locked' : 'Locked because the device was locked';
     await lock();
   }
 
@@ -280,6 +291,7 @@ class AppController extends ChangeNotifier {
 
   Future<void> _modified() async {
     await refreshEntries();
+    _credentialsChanged();
     // Sync after local modifications (debounced to batch quick edits).
     _debounce?.cancel();
     _debounce = Timer(timings.syncDebounce, () => syncNow(quiet: true));
@@ -345,7 +357,10 @@ class AppController extends ChangeNotifier {
     try {
       final r = await api.sync();
       state = r.state;
-      if (r.report.localChanged) await refreshEntries();
+      if (r.report.localChanged) {
+        await refreshEntries();
+        _credentialsChanged();
+      }
       if (r.report.headerAdopted) {
         _say('Your master password was changed on another device. Use the new password next time.');
       } else if (r.report.conflicts > 0 && r.report.localChanged) {

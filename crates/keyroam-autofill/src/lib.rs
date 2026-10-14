@@ -12,6 +12,7 @@ pub mod android;
 pub mod bridge;
 pub mod framing;
 pub mod install;
+pub mod ios;
 pub mod matching;
 pub mod origin;
 pub mod protocol;

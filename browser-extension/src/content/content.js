@@ -137,6 +137,11 @@
       case 'hide_save_bar':
         if (isTop) hideSaveBar();
         break;
+      case 'report_forms':
+        // The background was suspended and forgot this frame.
+        reportedKind = pageKind();
+        send({ type: 'forms', kind: reportedKind }).then(() => sendResponse({}));
+        return true;
       default:
         return false;
     }

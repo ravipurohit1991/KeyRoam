@@ -80,6 +80,9 @@ flutter test
   browsers** writes the native-messaging manifests; under the macOS sandbox
   that fails and the app shows the terminal command to run instead. Logins
   saved from the browser appear within a few seconds.
+- **Backups and CSV files** can be picked in the system's open and save
+  dialogs (Windows and macOS, served by the runners on the `keyroam/files`
+  channel; no Flutter plugins are needed).
 - **Import passwords from CSV…** reads exports of Chrome, Edge, Firefox,
   Safari, Bitwarden, LastPass, 1Password and KeePass, skips logins already in
   the vault, and can delete the plaintext CSV afterwards.
@@ -121,5 +124,26 @@ as the Flutter UI through JNI (`KeyRoamEngine`, the native library's
 In the app, **Menu → Autofill…** opens the system settings to choose KeyRoam,
 and **Menu → Biometric unlock…** turns biometric unlock on or off. The rules
 that decide which logins an app or page may see live in Rust
-(`crates/keyroam-autofill/src/android.rs`) and have tests. iOS integrations are
-milestone 7 in [../ROADMAP.md](../ROADMAP.md).
+(`crates/keyroam-autofill/src/android.rs`) and have tests.
+
+### iOS integrations
+
+Swift reaches the same Rust engine: `Shared/KeyRoamEngine.swift` opens the
+engine framework bundled in `Runner.app/Frameworks` (the image Dart already
+loaded, so the UI and Swift share one engine).
+
+| Component | What it does |
+|---|---|
+| `Runner/KeyRoamPlatformPlugin.swift` | The `keyroam/platform` channel: the App Group vault folder, Google sign-in in an `ASWebAuthenticationSession`, Face ID, background sync, AutoFill settings, QuickType suggestions; locks the UI when the device locks |
+| `AutoFill/CredentialProviderViewController.swift` | The AutoFill Credential Provider extension: unlock with Face ID or the master password, choose a login of the requesting site or app |
+| `Shared/BiometricKey.swift` | Keeps the key-encryption key in a keychain item that needs the current Face ID / Touch ID, shared with the extension |
+| `SyncTask` | `BGAppRefreshTask` sync while the vault is unlocked |
+
+The rules that decide which logins a request may see live in Rust
+(`crates/keyroam-autofill/src/ios.rs`). To run on a device, set your team in
+Xcode for the `Runner` and `AutoFill` targets and enable the **App Groups**
+(`group.io.github.ravipurohit1991.keyroam`) and **AutoFill Credential
+Provider** capabilities for both. Then turn on KeyRoam in Settings → General →
+AutoFill & Passwords (the app's **Menu → Autofill…** opens it). An unsigned
+build without the App Group keeps the vault in the app's own folder and
+AutoFill cannot reach it.
