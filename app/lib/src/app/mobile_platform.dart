@@ -16,26 +16,31 @@ class BiometricStatus {
   final bool enabled;
 }
 
-/// The Android system integrations KeyRoam offers.
-class AndroidAutofillStatus {
-  const AndroidAutofillStatus({
+/// The system autofill integrations KeyRoam offers.
+class AutofillStatus {
+  const AutofillStatus({
     this.autofillSupported = false,
     this.autofillEnabled = false,
     this.credentialProviderSupported = false,
+    this.ios = false,
   });
 
   final bool autofillSupported;
 
-  /// KeyRoam is the selected autofill service.
+  /// KeyRoam is the selected autofill service (Android) or AutoFill
+  /// provider (iOS).
   final bool autofillEnabled;
 
   /// Credential Manager providers exist (Android 14+).
   final bool credentialProviderSupported;
+
+  /// iOS: AutoFill providers are chosen in the Settings app.
+  final bool ios;
 }
 
-/// What the Android app adds to the shared UI: biometric unlock, background
-/// sync, the system autofill settings, and notifications when the vault
-/// changed outside the UI (autofill, background sync).
+/// What the Android and iOS apps add to the shared UI: biometric unlock,
+/// background sync, the system autofill settings, and notifications when the
+/// vault changed outside the UI (autofill, background sync).
 abstract class MobilePlatform {
   Future<BiometricStatus> biometricStatus();
 
@@ -49,15 +54,20 @@ abstract class MobilePlatform {
   Future<void> scheduleBackgroundSync();
   Future<void> syncWhenOnline();
 
-  Future<AndroidAutofillStatus> autofillStatus();
+  Future<AutofillStatus> autofillStatus();
   Future<bool> openAutofillSettings();
   Future<bool> openCredentialSettings();
+
+  /// The vault's logins changed or it was unlocked: iOS refreshes its
+  /// QuickType suggestions (usernames and sites, never passwords).
+  Future<void> credentialsChanged();
 
   void listen({required void Function() onVaultChanged, required void Function() onOnline});
 }
 
-/// [MobilePlatform] over the `keyroam/platform` channel of `MainActivity`.
-class AndroidPlatform implements MobilePlatform {
+/// [MobilePlatform] over the `keyroam/platform` channel of Android's
+/// `MainActivity` and iOS's `KeyRoamPlatformPlugin`.
+class NativeMobilePlatform implements MobilePlatform {
   static const _channel = MethodChannel('keyroam/platform');
 
   Future<T?> _invoke<T>(String method, [Map<String, Object?>? args]) async {
@@ -93,12 +103,13 @@ class AndroidPlatform implements MobilePlatform {
   Future<void> syncWhenOnline() => _invoke<void>('syncWhenOnline');
 
   @override
-  Future<AndroidAutofillStatus> autofillStatus() async {
+  Future<AutofillStatus> autofillStatus() async {
     final m = await _channel.invokeMapMethod<String, bool>('autofillStatus') ?? const {};
-    return AndroidAutofillStatus(
+    return AutofillStatus(
       autofillSupported: m['autofill_supported'] ?? false,
       autofillEnabled: m['autofill_enabled'] ?? false,
       credentialProviderSupported: m['credential_provider_supported'] ?? false,
+      ios: m['ios'] ?? false,
     );
   }
 
@@ -107,6 +118,9 @@ class AndroidPlatform implements MobilePlatform {
 
   @override
   Future<bool> openCredentialSettings() async => await _invoke<bool>('openCredentialSettings') ?? false;
+
+  @override
+  Future<void> credentialsChanged() => _invoke<void>('credentialsChanged');
 
   @override
   void listen({required void Function() onVaultChanged, required void Function() onOnline}) {

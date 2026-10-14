@@ -75,6 +75,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm test
       - run: node build.mjs
+      # Mozilla's validator: the Firefox package must load without warnings.
+      - run: npx --yes web-ext@8 lint --source-dir dist/firefox --warnings-as-errors
       # End to end: real Chromium, the real native host, bridge and protocol.
       - run: cargo build --locked -p keyroam-native-host --bins --examples
       - run: npm install --no-save --no-package-lock playwright@1.56.1

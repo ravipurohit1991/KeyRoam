@@ -4,9 +4,11 @@ import 'package:flutter/services.dart';
 
 /// Storage locations that the Rust engine cannot discover by itself.
 ///
-/// Desktop and iOS use the engine defaults (null). On Android, `MainActivity`
-/// reports the app's private data folder and an app-specific folder that is
-/// reachable over USB, for backups.
+/// Desktop platforms use the engine defaults (null). On Android,
+/// `MainActivity` reports the app's private data folder and an app-specific
+/// folder that is reachable over USB, for backups. On iOS, the plugin reports
+/// the App Group folder the AutoFill extension can read, and Documents (shown
+/// in the Files app) for backups.
 class PlatformPaths {
   const PlatformPaths({this.data, this.backups});
 
@@ -15,11 +17,19 @@ class PlatformPaths {
 
   static const _channel = MethodChannel('keyroam/platform');
 
-  /// Open [url] in the browser on Android, where the engine cannot. Returns
-  /// false on other platforms or on failure.
+  static bool get _mobile => Platform.isAndroid || Platform.isIOS;
+
+  /// Open the sign-in page [url] where the engine cannot: in the browser on
+  /// Android, in an `ASWebAuthenticationSession` on iOS. Returns false on
+  /// other platforms or on failure.
   static Future<bool> openUrl(String url) async {
-    if (!Platform.isAndroid) return false;
+    if (!_mobile) return false;
     return await _channel.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
+  }
+
+  /// Dismiss the iOS sign-in sheet once sign-in finished or failed.
+  static Future<void> closeSignIn() async {
+    if (Platform.isIOS) await _channel.invokeMethod<void>('closeSignIn');
   }
 
   /// Desktop platforms, where the browser extension can be used.
@@ -42,7 +52,7 @@ class PlatformPaths {
   }
 
   static Future<PlatformPaths> load() async {
-    if (!Platform.isAndroid) return const PlatformPaths();
+    if (!_mobile) return const PlatformPaths();
     final m = await _channel.invokeMapMethod<String, String>('paths');
     return PlatformPaths(data: m?['data'], backups: m?['backups']);
   }

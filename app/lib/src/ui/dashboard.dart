@@ -38,7 +38,7 @@ class Dashboard extends StatelessWidget {
       case 'biometric':
         message = await showBiometricDialog(context, controller);
       case 'autofill':
-        await showAndroidAutofillDialog(context, controller);
+        await showAutofillDialog(context, controller);
       case 'signin':
         await showSignInDialog(
           context,

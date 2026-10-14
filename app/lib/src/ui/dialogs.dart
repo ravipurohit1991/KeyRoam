@@ -268,6 +268,7 @@ class _ActionDialog extends StatefulWidget {
     required this.action,
     required this.run,
     this.initialPath,
+    this.browse,
     this.passwordLabels = const [],
     this.confirmLast = false,
   });
@@ -276,6 +277,9 @@ class _ActionDialog extends StatefulWidget {
   final String description;
   final String action;
   final String? initialPath;
+
+  /// Pick the file in a native dialog, starting from the current path.
+  final Future<String?> Function(String current)? browse;
   final List<String> passwordLabels;
 
   /// Require the last password to be typed twice.
@@ -301,6 +305,11 @@ class _ActionDialogState extends State<_ActionDialog> {
       c.dispose();
     }
     super.dispose();
+  }
+
+  Future<void> _browse() async {
+    final path = await widget.browse!(_path!.text.trim());
+    if (path != null && mounted) setState(() => _path.text = path);
   }
 
   Future<void> _submit() async {
@@ -340,8 +349,19 @@ class _ActionDialogState extends State<_ActionDialog> {
             if (_path != null) ...[
               const SizedBox(height: 16),
               TextField(
+                key: const Key('actionPath'),
                 controller: _path,
-                decoration: const InputDecoration(labelText: 'File'),
+                decoration: InputDecoration(
+                  labelText: 'File',
+                  suffixIcon: widget.browse == null
+                      ? null
+                      : IconButton(
+                          key: const Key('browse'),
+                          tooltip: 'Browse…',
+                          icon: const Icon(Icons.folder_open),
+                          onPressed: _busy ? null : _browse,
+                        ),
+                ),
               ),
             ],
             for (var i = 0; i < labels.length; i++) ...[
@@ -381,6 +401,14 @@ Future<String?> showExportDialog(BuildContext context, AppController c) async {
           'need it to restore.',
       action: 'Export',
       initialPath: path,
+      browse: c.files.supported
+          ? (current) => c.files.save(
+              title: 'Export encrypted backup',
+              suggestedPath: current,
+              typeLabel: 'KeyRoam backup',
+              extensions: const ['krbackup'],
+            )
+          : null,
       passwordLabels: const ['Backup password'],
       confirmLast: true,
       run: (path, pw) async {
@@ -401,6 +429,13 @@ Future<String?> showImportDialog(BuildContext context, AppController c) {
           'is overwritten. Accepts .krbackup exports and KeyRoam\'s automatic local backups.',
       action: 'Restore',
       initialPath: '',
+      browse: c.files.supported
+          ? (_) => c.files.open(
+              title: 'Restore from backup',
+              typeLabel: 'KeyRoam backup',
+              extensions: const ['krbackup', 'krv'],
+            )
+          : null,
       passwordLabels: const ['Backup password'],
       run: (path, pw) async {
         final r = await c.importBackup(path!, pw[0]);
@@ -680,6 +715,12 @@ class _CsvImportDialogState extends State<_CsvImportDialog> {
     super.dispose();
   }
 
+  Future<void> _browse() async {
+    final files = widget.controller.files;
+    final path = await files.open(title: 'Import passwords from CSV', typeLabel: 'CSV file', extensions: const ['csv']);
+    if (path != null && mounted) setState(() => _path.text = path);
+  }
+
   Future<void> _import() async {
     setState(() {
       _busy = true;
@@ -714,7 +755,7 @@ class _CsvImportDialogState extends State<_CsvImportDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'Export your passwords as a CSV file, then enter its path:\n'
+              'Export your passwords as a CSV file, then choose it:\n'
               '• Chrome, Edge, Brave: Settings → Passwords (Password Manager) → Export passwords\n'
               '• Firefox: about:logins → ••• menu → Export Passwords\n'
               '• Safari: File → Export → Passwords\n'
@@ -725,9 +766,17 @@ class _CsvImportDialogState extends State<_CsvImportDialog> {
             TextField(
               key: const Key('csvPath'),
               controller: _path,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'CSV file',
                 hintText: 'C:\\Users\\me\\Downloads\\passwords.csv',
+                suffixIcon: widget.controller.files.supported
+                    ? IconButton(
+                        key: const Key('browse'),
+                        tooltip: 'Browse…',
+                        icon: const Icon(Icons.folder_open),
+                        onPressed: _busy ? null : _browse,
+                      )
+                    : null,
               ),
               onChanged: (_) => setState(() {}),
             ),
@@ -804,8 +853,9 @@ Future<String?> showBiometricDialog(BuildContext context, AppController c) async
   );
 }
 
-/// Android autofill and Credential Manager: status and links to the system settings.
-Future<void> showAndroidAutofillDialog(BuildContext context, AppController c) async {
+/// Android autofill and Credential Manager, or iOS AutoFill: status and
+/// links to the system settings.
+Future<void> showAutofillDialog(BuildContext context, AppController c) async {
   final m = c.mobile!;
   var status = await m.autofillStatus();
   if (!context.mounted) return;
@@ -826,44 +876,77 @@ Future<void> showAndroidAutofillDialog(BuildContext context, AppController c) as
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text(
-                    'KeyRoam can fill your logins in apps and browsers. Apps see only logins saved for them; '
-                    'browsers see only logins for the site you are on, and only while KeyRoam is unlocked.',
-                  ),
-                  const SizedBox(height: 12),
-                  ListTile(
-                    key: const Key('autofillService'),
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(status.autofillEnabled ? Icons.check_circle : Icons.radio_button_unchecked),
-                    title: const Text('Autofill service'),
-                    subtitle: Text(
-                      !status.autofillSupported
-                          ? 'Not available on this device'
-                          : status.autofillEnabled
-                          ? 'KeyRoam is your autofill service'
-                          : 'Choose KeyRoam as your autofill service',
-                    ),
-                    trailing: status.autofillSupported
-                        ? TextButton(
+                children: status.ios
+                    ? [
+                        const Text(
+                          'KeyRoam can fill your logins in Safari and in apps. Each time, you unlock KeyRoam with '
+                          'Face ID or your master password and choose the login. A website or app sees only the '
+                          'logins saved for its own site.',
+                        ),
+                        const SizedBox(height: 12),
+                        ListTile(
+                          key: const Key('autofillService'),
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(status.autofillEnabled ? Icons.check_circle : Icons.radio_button_unchecked),
+                          title: const Text('AutoFill Passwords'),
+                          subtitle: Text(
+                            status.autofillEnabled
+                                ? 'KeyRoam is turned on in AutoFill & Passwords'
+                                : 'In Settings, open General → AutoFill & Passwords and turn on KeyRoam',
+                          ),
+                          trailing: TextButton(
                             onPressed: () async {
                               await m.openAutofillSettings();
                               await refresh();
                             },
                             child: const Text('Settings'),
-                          )
-                        : null,
-                  ),
-                  if (status.credentialProviderSupported)
-                    ListTile(
-                      key: const Key('credentialProvider'),
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.key_outlined),
-                      title: const Text('Passwords & accounts'),
-                      subtitle: const Text('Offer KeyRoam in the sign-in sheet of apps (Android 14+)'),
-                      trailing: TextButton(onPressed: m.openCredentialSettings, child: const Text('Settings')),
-                    ),
-                ],
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Suggestions above the keyboard show the usernames and websites of your logins, never '
+                          'their passwords. They are updated whenever KeyRoam is unlocked.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ]
+                    : [
+                        const Text(
+                          'KeyRoam can fill your logins in apps and browsers. Apps see only logins saved for them; '
+                          'browsers see only logins for the site you are on, and only while KeyRoam is unlocked.',
+                        ),
+                        const SizedBox(height: 12),
+                        ListTile(
+                          key: const Key('autofillService'),
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(status.autofillEnabled ? Icons.check_circle : Icons.radio_button_unchecked),
+                          title: const Text('Autofill service'),
+                          subtitle: Text(
+                            !status.autofillSupported
+                                ? 'Not available on this device'
+                                : status.autofillEnabled
+                                ? 'KeyRoam is your autofill service'
+                                : 'Choose KeyRoam as your autofill service',
+                          ),
+                          trailing: status.autofillSupported
+                              ? TextButton(
+                                  onPressed: () async {
+                                    await m.openAutofillSettings();
+                                    await refresh();
+                                  },
+                                  child: const Text('Settings'),
+                                )
+                              : null,
+                        ),
+                        if (status.credentialProviderSupported)
+                          ListTile(
+                            key: const Key('credentialProvider'),
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.key_outlined),
+                            title: const Text('Passwords & accounts'),
+                            subtitle: const Text('Offer KeyRoam in the sign-in sheet of apps (Android 14+)'),
+                            trailing: TextButton(onPressed: m.openCredentialSettings, child: const Text('Settings')),
+                          ),
+                      ],
               ),
             ),
           ),

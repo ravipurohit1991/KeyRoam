@@ -69,6 +69,8 @@ class MainActivity : FlutterFragmentActivity() {
                 "autofillStatus" -> result.success(autofillStatus())
                 "openAutofillSettings" -> result.success(openAutofillSettings())
                 "openCredentialSettings" -> result.success(openCredentialSettings())
+                // iOS refreshes its QuickType suggestions; Android's services ask on demand.
+                "credentialsChanged" -> result.success(null)
                 else -> result.notImplemented()
             }
         }

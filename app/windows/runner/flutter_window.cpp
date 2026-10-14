@@ -5,6 +5,7 @@
 
 #include <optional>
 
+#include "file_dialogs.h"
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -32,6 +33,14 @@ bool FlutterWindow::OnCreate() {
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "keyroam/system",
           &flutter::StandardMethodCodec::GetInstance());
+  files_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "keyroam/files",
+          &flutter::StandardMethodCodec::GetInstance());
+  files_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) { HandleFileDialog(call, std::move(result)); });
   // Receive WM_WTSSESSION_CHANGE when the session is locked.
   WTSRegisterSessionNotification(GetHandle(), NOTIFY_FOR_THIS_SESSION);
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
@@ -51,6 +60,7 @@ bool FlutterWindow::OnCreate() {
 void FlutterWindow::OnDestroy() {
   WTSUnRegisterSessionNotification(GetHandle());
   system_channel_ = nullptr;
+  files_channel_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -89,6 +99,48 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
+}
+
+void FlutterWindow::HandleFileDialog(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  const bool save = call.method_name() == "save";
+  if (!save && call.method_name() != "open") {
+    result->NotImplemented();
+    return;
+  }
+  const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+  auto text = [args](const char* key) -> std::string {
+    if (!args) return std::string();
+    auto it = args->find(flutter::EncodableValue(key));
+    if (it == args->end()) return std::string();
+    const auto* s = std::get_if<std::string>(&it->second);
+    return s ? *s : std::string();
+  };
+  FileDialogOptions options;
+  options.save = save;
+  options.title = text("title");
+  options.initial_directory = text("initialDirectory");
+  options.suggested_name = text("suggestedName");
+  options.type_label = text("typeLabel");
+  if (args) {
+    auto it = args->find(flutter::EncodableValue("extensions"));
+    if (it != args->end()) {
+      if (const auto* list = std::get_if<flutter::EncodableList>(&it->second)) {
+        for (const auto& e : *list) {
+          if (const auto* s = std::get_if<std::string>(&e)) {
+            options.extensions.push_back(*s);
+          }
+        }
+      }
+    }
+  }
+  std::optional<std::string> path = ShowFileDialog(GetHandle(), options);
+  if (path) {
+    result->Success(flutter::EncodableValue(*path));
+  } else {
+    result->Success();
+  }
 }
 
 void FlutterWindow::LockVault() {

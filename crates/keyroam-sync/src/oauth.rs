@@ -90,10 +90,15 @@ impl OAuthClientConfig {
 
     /// Read the client registration from the environment at runtime, falling
     /// back to values baked in at build time (release builds set these).
-    /// Android and iOS builds use the mobile client.
+    /// Android and iOS builds use the mobile client when one is configured,
+    /// and otherwise the desktop client with its loopback redirect, the same
+    /// choice `begin_sign_in` makes, so tokens are refreshed with the client
+    /// that issued them.
     pub fn from_env() -> Result<Self> {
         if cfg!(any(target_os = "android", target_os = "ios")) {
-            return Self::mobile_from_env();
+            if let Ok(mobile) = Self::mobile_from_env() {
+                return Ok(mobile);
+            }
         }
         Self::desktop_from_env()
     }

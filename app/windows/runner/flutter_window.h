@@ -35,7 +35,14 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       system_channel_;
 
+  // Native open and save dialogs (backups, CSV imports).
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      files_channel_;
+
   void LockVault();
+  void HandleFileDialog(
+      const flutter::MethodCall<flutter::EncodableValue>& call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
