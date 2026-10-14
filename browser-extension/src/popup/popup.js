@@ -101,7 +101,37 @@ function render(state) {
   }
 }
 
+// Firefox lets users withhold host access (and before Firefox 127 did not
+// grant it at install). Without it the form-detection content script never
+// runs, so ask for it instead of reporting "no login form".
+const SITE_ACCESS = { origins: api.runtime.getManifest().host_permissions ?? [] };
+
+async function hasSiteAccess() {
+  try {
+    return (await api.permissions?.contains(SITE_ACCESS)) ?? true;
+  } catch {
+    return true;
+  }
+}
+
+function siteAccessButton() {
+  // permissions.request must run directly in the click handler.
+  return button(
+    'Allow access to websites',
+    () =>
+      api.permissions.request(SITE_ACCESS).then((granted) => {
+        if (granted) showStatus(describeError({ code: 'reload_page' }));
+      }),
+    true,
+  );
+}
+
 async function refresh() {
+  if (!(await hasSiteAccess())) {
+    $('logins').replaceChildren();
+    showStatus(describeError({ code: 'no_site_access' }), siteAccessButton());
+    return;
+  }
   render(await send({ type: 'popup_state', ...consent }));
 }
 

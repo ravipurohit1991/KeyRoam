@@ -13,6 +13,8 @@ import { chooseFrame, displayHost, isWebUrl, originOf, pageInfo } from './policy
 
 export const HOST_NAME = 'io.github.ravipurohit1991.keyroam';
 export const SAVE_TTL_MS = 3 * 60 * 1000;
+/** How long frames get to answer `report_forms`. */
+export const REDISCOVER_MS = 150;
 
 const SAVE_KEY = (tabId) => `pending-save:${tabId}`;
 const NO_FORM = { error: { code: 'no_form', message: 'no login form on this page' } };
@@ -22,10 +24,11 @@ function invalid(message = 'not allowed') {
 }
 
 export class Background {
-  constructor({ api, client, now = () => Date.now() }) {
+  constructor({ api, client, now = () => Date.now(), rediscoverMs = REDISCOVER_MS }) {
     this.api = api;
     this.client = client;
     this.now = now;
+    this.rediscoverMs = rediscoverMs;
     /** tabId → Map(frameId → {url, kind}) reported by content scripts. */
     this.frames = new Map();
     /** tabId → {origin, username} of the last fill, for change-password forms. */
@@ -123,15 +126,27 @@ export class Background {
     return tab ?? null;
   }
 
-  #target(tab) {
+  async #target(tab) {
+    if (!this.frames.has(tab.id)) await this.#rediscover(tab.id);
     const frame = chooseFrame(this.frames.get(tab.id));
     return { frameId: frame.frameId, url: frame.url ?? tab.url };
+  }
+
+  /**
+   * The frame map lives in memory, and the browser suspends an idle
+   * background (Chromium's service worker, Firefox's event page). Ask every
+   * frame of the tab to report its forms again; each answers with a `forms`
+   * message, and the first reply resolves the call.
+   */
+  async #rediscover(tabId) {
+    const reply = await this.api.tabs.sendMessage(tabId, { type: 'report_forms' }).catch(() => null);
+    if (reply && this.rediscoverMs > 0) await new Promise((r) => setTimeout(r, this.rediscoverMs));
   }
 
   async popupState(consent = {}) {
     const tab = await this.activeTab();
     if (!tab || !isWebUrl(tab.url)) return { supported: false };
-    const target = this.#target(tab);
+    const target = await this.#target(tab);
     const state = {
       supported: true,
       host: displayHost(tab.url),
@@ -153,7 +168,7 @@ export class Background {
   async fill(id, consent = {}) {
     const tab = await this.activeTab();
     if (!tab || !isWebUrl(tab.url)) return { error: { code: 'unsupported_page', message: 'not a web page' } };
-    const target = this.#target(tab);
+    const target = await this.#target(tab);
     const res = await this.client.request({
       type: 'credential',
       page: pageInfo(target.url, tab.url, consent),
@@ -176,7 +191,7 @@ export class Background {
   async fillGenerated(password) {
     const tab = await this.activeTab();
     if (!tab || !isWebUrl(tab.url) || !password) return invalid();
-    const target = this.#target(tab);
+    const target = await this.#target(tab);
     const filled = await this.api.tabs
       .sendMessage(
         tab.id,

@@ -5,7 +5,7 @@
   "version": "0.3.0",
   "description": "Fill and save passwords from the KeyRoam desktop app. Your keys. Wherever you go.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyDGa5KQyaWZd3M7PRK+E8WorxuMxUJCAJnFQsA1yxRrT10f/30D1qUHg/RjGfI2Y89oJUyApIqvYjkG9qBvwKIq9ydDYpbKnZUi5bEj5dZr7Kopoq0VHpoL1esYwFxUmvtRNg56GZBktF6nez5kfonWi6ceAQPpJoF9JQ/IU+kxk2+yNWsTP04im1V4Cyo5eR7yRHLNlxFrwkcbbmrbQ1sChvowCtgEjF1SZrLLoq6UcbvBeJpo/G6o+Eo7geHOzLlq3nQF36KTYTZ/emRJNorl0/V4k3XaaWFTe4fXgVIv+bMdkMjNGKo2eRlhQJGMPac3c+pQZCCdMtG0um2ZjzQIDAQAB",
-  "minimum_chrome_version": "116",
+  "minimum_chrome_version": "121",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -22,6 +22,7 @@
   },
   "background": {
     "service_worker": "background.js",
+    "scripts": ["background.js"],
     "type": "module"
   },
   "permissions": ["nativeMessaging", "storage"],
@@ -51,5 +52,12 @@
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "keyroam@ravipurohit1991.github.io",
+      "strict_min_version": "115.0",
+      "data_collection_permissions": { "required": ["none"] }
+    }
   }
 }

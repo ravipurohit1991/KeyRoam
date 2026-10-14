@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { build, FIREFOX_ID } from '../build.mjs';
+import { build, chromiumManifest, FIREFOX_ID } from '../build.mjs';
 
 const root = new URL('../', import.meta.url);
 const rustInstall = readFileSync(new URL('../crates/keyroam-autofill/src/install.rs', root), 'utf8');
@@ -50,6 +50,16 @@ test('built manifests for Chromium and Firefox', () => {
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+});
+
+test('the source folder and the Chromium package also load in Firefox', () => {
+  const src = JSON.parse(readFileSync(new URL('src/manifest.json', root), 'utf8'));
+  // Firefox: "background.service_worker is currently disabled. Add background.scripts."
+  assert.deepEqual(src.background.scripts, [src.background.service_worker]);
+  assert.equal(src.browser_specific_settings.gecko.id, FIREFOX_ID);
+  // Chromium accepts `background.scripts` next to the service worker from 121.
+  assert.ok(Number(src.minimum_chrome_version) >= 121);
+  assert.deepEqual(chromiumManifest(src), src);
 });
 
 test('the background talks to the registered host name', () => {

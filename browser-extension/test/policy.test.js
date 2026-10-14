@@ -41,5 +41,6 @@ test('errors have readable explanations', () => {
   assert.match(describeError({ code: 'locked' }), /Unlock KeyRoam/);
   assert.match(describeError({ code: 'app_not_running' }), /Open the KeyRoam app/);
   assert.equal(describeError({ code: 'weird', message: 'raw' }), 'raw');
+  assert.match(describeError({ code: 'no_site_access' }), /access to websites/);
   assert.equal(describeError(null), '');
 });

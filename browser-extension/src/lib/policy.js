@@ -67,6 +67,8 @@ const MESSAGES = {
   unsupported_page: 'KeyRoam fills logins on websites only.',
   not_found: 'That login is not saved for this website.',
   no_form: 'KeyRoam could not find a login form on this page.',
+  no_site_access: 'KeyRoam needs access to websites to find their login forms. It reads forms only; logins are filled only when you choose one.',
+  reload_page: 'Access allowed. Reload this page, then open KeyRoam again.',
 };
 
 export function describeError(error) {
