@@ -55,9 +55,11 @@ $env:KEYROAM_GOOGLE_CLIENT_SECRET = "GOCSPX-..."
 Release builds embed these values at compile time. The same variable names are
 read by `option_env!` during `cargo build`, so end users never have to set them.
 
-The Android app uses the mobile client instead. Its id must be known when the
-app is built, because the Rust engine embeds it and Gradle registers its
-reversed id as the sign-in redirect scheme. Put it in `app/pubspec.yaml`:
+The Android and iOS apps use the mobile client instead. Its id must be known
+when the app is built, because the Rust engine embeds it and Gradle registers
+its reversed id as the sign-in redirect scheme on Android. (On iOS the
+`ASWebAuthenticationSession` catches the redirect, so nothing is registered.)
+Put it in `app/pubspec.yaml`:
 
 ```yaml
 hooks:
@@ -67,8 +69,10 @@ hooks:
 ```
 
 CI does this from the `KEYROAM_GOOGLE_MOBILE_CLIENT_ID` repository secret.
-Without a mobile client, the Android app falls back to the desktop loopback
-flow.
+Without a mobile client, the Android and iOS apps fall back to the desktop
+client and its loopback redirect (on iOS the page opens in an
+`ASWebAuthenticationSession`, which KeyRoam closes once the engine has the
+code).
 
 Then run `keyroam init` (new user) or `keyroam join` (another device).
 

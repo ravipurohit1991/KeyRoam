@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "keyroam-autofill"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "dirs",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "keyroam-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "dirs",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "keyroam-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "base64",
@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "keyroam-ffi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "dirs",
@@ -798,7 +798,7 @@ dependencies = [
 
 [[package]]
 name = "keyroam-native-host"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "keyroam-autofill",
  "keyroam-core",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "keyroam-sync"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "keyroam-core",

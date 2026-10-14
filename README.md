@@ -27,7 +27,7 @@ Google Drive), every device.
 | 4 | Windows and macOS desktop apps (Flutter) | ✅ Done: `app/` + `keyroam-ffi`, with tests (macOS built in CI only) |
 | 5 | Desktop browser autofill extension | ✅ Done: `browser-extension/` + `keyroam-native-host`, with unit and real-browser tests |
 | 6 | Android app + Credential Manager provider | ✅ Done: autofill and Credential Manager, mobile sign-in, biometric unlock, background sync |
-| 7 | iOS app + AutoFill Credential Provider extension | 🔨 App builds in CI (unsigned); sign-in & autofill pending |
+| 7 | iOS app + AutoFill Credential Provider extension | ✅ Done: AutoFill extension, QuickType suggestions, Face ID, sign-in, background sync (unsigned CI build) |
 | 8 | Cross-device tests, security review, packaging | 🔨 Key rotation, permanent purge and inter-process lock done; review and packaging pending |
 
 The desktop app (`app/`), the browser extension and the command-line client
@@ -67,7 +67,7 @@ each push to `main`. You can download them from the run page under
 | `KeyRoam-windows-x64` | Windows app (zip; run `keyroam.exe`) |
 | `KeyRoam-macos-universal` | macOS app, Apple silicon and Intel (unsigned) |
 | `KeyRoam-android` | `KeyRoam-android.apk` and `.aab` (signed with a debug key) |
-| `KeyRoam-ios-unsigned` | Unsigned `.ipa`. It needs re-signing before it can be installed |
+| `KeyRoam-ios-unsigned` | Unsigned `.ipa` with the AutoFill extension. It needs re-signing (with the App Group and AutoFill capabilities) before it can be installed |
 | `KeyRoam-extension` | Browser extension: `KeyRoam-extension-chromium.zip` and `-firefox.zip` |
 | `keyroam-cli-*` | Command-line client and `keyroam-native-host` for Linux, Windows and macOS |
 
@@ -81,7 +81,7 @@ CLI, add the repository secrets `KEYROAM_GOOGLE_CLIENT_ID` and
 You need a stable Rust toolchain (<https://rustup.rs>).
 
 ```sh
-cargo test --workspace      # 148 tests: crypto, merge properties, sync, OAuth, autofill, import, FFI, CLI, host
+cargo test --workspace      # 153 tests: crypto, merge properties, sync, OAuth, autofill, import, FFI, CLI, host
 cargo build --release -p keyroam-cli
 ```
 
@@ -125,7 +125,8 @@ afterwards, and empty the trash.
    click **Register with browsers**.
 2. Load the extension from the `KeyRoam-extension` download (or build it with
    `node browser-extension/build.mjs`) in Chrome, Edge, Brave, Vivaldi or
-   Firefox.
+   Firefox. In Firefox, use `KeyRoam-extension-firefox.zip` (or
+   `dist/firefox`) under `about:debugging` → **Load Temporary Add-on…**.
 3. On a login page, click the KeyRoam toolbar button and pick a login, or
    press Ctrl/⌘+Shift+L. After you sign in with a new or changed password,
    KeyRoam offers to save it.

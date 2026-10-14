@@ -96,6 +96,27 @@ biometric unlock, WorkManager sync and the sign-in redirect activity. The
 `keyroam_autofill::android`. When the vault changes outside the UI, Kotlin
 tells the UI over the `keyroam/platform` channel, and the UI refreshes.
 
+### iOS (`app/ios`)
+
+Swift calls the same two C functions as Dart. `Shared/KeyRoamEngine.swift`
+opens the engine framework that the build hook bundles in
+`Runner.app/Frameworks` with `dlopen`: in the app it is the image Dart already
+loaded, so Swift and the Flutter UI share one engine; in the AutoFill
+extension (`Runner.app/PlugIns/AutoFill.appex`) it is a second engine over
+the same App Group folder. `Runner/KeyRoamPlatformPlugin.swift` serves the
+`keyroam/platform` channel with the same methods as Android's `MainActivity`
+(paths, sign-in in an `ASWebAuthenticationSession`, Face ID, background sync,
+AutoFill settings, QuickType identities). `AutoFill/` holds the
+`ASCredentialProviderViewController`, which answers through the `ios_*`
+engine methods and the rules of `keyroam_autofill::ios`.
+
+### Desktop file dialogs
+
+The Windows runner (`windows/runner/file_dialogs.cpp`, `IFileDialog`) and the
+macOS runner (`NSSavePanel`/`NSOpenPanel`) serve native open and save dialogs
+on the `keyroam/files` channel, for backups and CSV imports. Under the macOS
+App Sandbox the picked file is what the app may read or write.
+
 ### `keyroam-cli`
 
 The reference front-end and the runnable deliverable for milestones 1–3. Every
@@ -105,5 +126,4 @@ operation the GUI apps will offer is available here first.
 
 | Milestone | Component | Notes |
 |---|---|---|
-| 7 | iOS `ASCredentialProviderViewController` extension | A shared App Group container for the encrypted vault, unlocked with the master password or Face ID. The key is wrapped in a Keychain item limited to biometry. Sync through BGAppRefreshTask. |
 | 8 | Cross-device test matrix, external security review, signed installers (MSIX, notarised DMG, Play, App Store) | |

@@ -96,12 +96,14 @@ exists.
 - OAuth 2.0 authorisation-code flow with **PKCE (S256)**. The desktop flow uses
   a loopback redirect on `127.0.0.1:<random port>` (RFC 8252) and a random
   `state` value, compared in constant time.
-- The Android app uses a mobile client without a secret. Google redirects to
+- The Android and iOS apps use a mobile client without a secret. Google redirects to
   the reversed client id, a private-use URI scheme (RFC 8252 §7.1). The
   engine accepts only a redirect for that exact scheme and path with the
   expected `state`. If another app registered the same scheme and caught the
   redirect, it still could not redeem the code without the PKCE verifier,
-  which never leaves KeyRoam.
+  which never leaves KeyRoam. On iOS the page opens in an
+  `ASWebAuthenticationSession` (a private session that shares no cookies
+  with Safari), which hands the redirect only to KeyRoam.
 - The only scope requested is `https://www.googleapis.com/auth/drive.appdata`,
   which gives access to KeyRoam's private app folder and nothing else in the
   user's Drive. Token responses that lack this scope are rejected.
@@ -207,6 +209,42 @@ defend against a compromised user account.
   merging and uploading need the vault key. KeyRoam never stores the master
   password or the vault key for background use.
 
+## iOS
+
+- **Two processes, one vault.** The AutoFill Credential Provider extension
+  is a separate process. The vault folder lives in the App Group container
+  (`group.io.github.ravipurohit1991.keyroam`) that only KeyRoam's app and
+  extension can open. The extension loads the same Rust engine from the
+  app's bundle and opens the vault itself, under the same data-directory
+  lock as the app, so neither overwrites the other's changes.
+- **Locked by default.** Each AutoFill request starts locked: the user
+  unlocks with Face ID or the master password, picks a login, and the
+  extension locks the vault again as soon as the request ends. A QuickType
+  suggestion is never filled without that unlock.
+- **Who is asking.** iOS describes a request with service identifiers:
+  the page's URL or domain in Safari, and for apps the domains of their
+  `webcredentials` associated domains, which Apple verifies against each
+  site's `apple-app-site-association` file. Both are matched by registrable
+  domain with the desktop rules (`keyroam_autofill::ios`); https logins are
+  never offered on http pages, and the chosen login is re-checked against
+  the request before it is released.
+- **QuickType suggestions.** While KeyRoam is the AutoFill provider, the app
+  gives iOS's credential identity store each login's entry id, username and
+  web host, so iOS can suggest it above the keyboard. Passwords are never
+  given to the store. The store is refreshed when the vault is unlocked or
+  changes; iOS keeps it while KeyRoam is locked.
+- **Face ID unlock.** The KEK is stored as a keychain item with
+  `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` and the
+  `.biometryCurrentSet` access control: it never leaves the device, is not
+  in backups, needs the current biometrics for every read, and becomes
+  unusable when a face or fingerprint is added or removed. The item is in
+  the App Group's keychain access group so the extension can unlock with
+  Face ID too. As on Android, a master-password change or vault-key rotation
+  makes the stored KEK useless and Face ID unlock turns itself off.
+- **Background sync** (`BGAppRefreshTask`) runs only while the vault is
+  unlocked in the app's memory. The app asks the UI to lock when the device
+  locks (`protectedDataWillBecomeUnavailable`).
+
 ## Permanent purge
 
 Deleting moves an entry to "recently deleted". **Delete permanently**
@@ -259,3 +297,10 @@ silently). Marks hold only an id and a clock.
    browser's signing certificate is planned.
 10. **Android memory.** Logins handed to Android for filling, and the strings
    Kotlin builds for the engine, are Java strings that cannot be wiped.
+11. **iOS memory.** The login returned to iOS and the JSON Swift exchanges
+   with the engine are Swift strings, which cannot be reliably wiped. The
+   extension process ends soon after each request.
+12. **iOS AutoFill trusts iOS's identifiers.** An app is identified by the
+   associated domains Apple verified for it. A site that lists another
+   developer's app in its `apple-app-site-association` file lets that app
+   request the site's logins, as with every iOS password manager.
