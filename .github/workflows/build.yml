@@ -47,6 +47,11 @@ jobs:
       - name: Build
         working-directory: app
         run: flutter build windows --release
+      - name: Bundle the browser native-messaging host
+        shell: bash
+        run: |
+          cargo build --release --locked -p keyroam-native-host
+          cp target/release/keyroam-native-host.exe app/build/windows/x64/runner/Release/
       - name: Package
         shell: pwsh
         run: Compress-Archive -Path app/build/windows/x64/runner/Release/* -DestinationPath KeyRoam-windows-x64.zip
@@ -76,6 +81,18 @@ jobs:
       - name: Build
         working-directory: app
         run: flutter build macos --release
+      - name: Bundle the browser native-messaging host
+        run: |
+          APP=app/build/macos/Build/Products/Release/KeyRoam.app
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p keyroam-native-host --target "$t"
+          done
+          lipo -create -output "$APP/Contents/MacOS/keyroam-native-host"             target/aarch64-apple-darwin/release/keyroam-native-host             target/x86_64-apple-darwin/release/keyroam-native-host
+          # Ad-hoc signatures (the app is not notarised yet). The host runs
+          # outside the sandbox, so it is signed without the app's entitlements.
+          codesign --force --sign - "$APP/Contents/MacOS/keyroam-native-host"
+          codesign --force --sign - --entitlements app/macos/Runner/Release.entitlements "$APP"
+          codesign --verify --strict "$APP"
       - name: Package
         run: ditto -c -k --sequesterRsrc --keepParent app/build/macos/Build/Products/Release/KeyRoam.app KeyRoam-macos-universal.zip
       - uses: actions/upload-artifact@v4
@@ -147,6 +164,31 @@ jobs:
           path: KeyRoam-ios-unsigned.ipa
           if-no-files-found: error
 
+  extension:
+    name: Browser extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test and build
+        working-directory: browser-extension
+        run: |
+          npm test
+          npm run build
+      - name: Package
+        run: |
+          (cd browser-extension/dist/chromium && zip -qr "$GITHUB_WORKSPACE/KeyRoam-extension-chromium.zip" .)
+          (cd browser-extension/dist/firefox && zip -qr "$GITHUB_WORKSPACE/KeyRoam-extension-firefox.zip" .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KeyRoam-extension
+          path: |
+            KeyRoam-extension-chromium.zip
+            KeyRoam-extension-firefox.zip
+          if-no-files-found: error
+
   cli:
     name: CLI (${{ matrix.name }})
     strategy:
@@ -178,7 +220,7 @@ jobs:
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos, android, ios, cli]
+    needs: [windows, macos, android, ios, extension, cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -210,4 +252,5 @@ jobs:
           body: |
             Pre-release build. **Use only synthetic passwords** until KeyRoam has passed its security review.
             The macOS and iOS builds are not signed or notarised; the Android build is signed with a debug key.
+            Browser autofill: install `KeyRoam-extension-chromium.zip` (Chrome, Edge, Brave) or `KeyRoam-extension-firefox.zip`, then in the desktop app open the menu → Browser autofill… → Set up browsers. See browser-extension/README.md.
           files: release/*

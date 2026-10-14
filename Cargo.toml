@@ -1,9 +1,16 @@
 [workspace]
 resolver = "2"
-members = ["crates/keyroam-core", "crates/keyroam-sync", "crates/keyroam-cli", "crates/keyroam-ffi"]
+members = [
+    "crates/keyroam-core",
+    "crates/keyroam-sync",
+    "crates/keyroam-cli",
+    "crates/keyroam-ffi",
+    "crates/keyroam-autofill",
+    "crates/keyroam-native-host",
+]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 publish = false
 
@@ -28,6 +35,7 @@ clap = { version = "4", features = ["derive", "env"] }
 rpassword = "7"
 dirs = "5"
 proptest = "1"
+psl = "2"
 tempfile = "3"
 
 # Argon2 is deliberately expensive. Optimise it even in debug/test builds so the

@@ -108,6 +108,39 @@ See [sync-protocol.md](sync-protocol.md). Security-relevant properties:
   sync time, last error).
 - `backups/`: rotating copies of earlier `vault.krv` files.
 
+## Browser autofill
+
+The extension never holds the vault. Each fill asks the desktop app for one
+login:
+
+- **Channel.** The browser starts `keyroam-native-host`, and only for the
+  KeyRoam extension: the host manifest lists the extension's id
+  (`allowed_origins` for Chromium, `allowed_extensions` for Firefox). The host
+  connects to the app on `127.0.0.1` and must present a 256-bit token, which
+  the app checks in constant time. The token is random and changes every time
+  the app starts. It is stored in `autofill-endpoint.json` in the data
+  directory (mode 0600 on Unix) and deleted when the listener stops. Messages
+  are limited to 64 KiB.
+- **Locked means locked.** Apart from reporting its state, the app answers
+  nothing while the vault is locked. Autofill requests do not reset the
+  auto-lock timer.
+- **Site binding.** URLs come from the browser (the active tab, the
+  `webNavigation` frame list, message senders), never from page content.
+  `list` returns titles and usernames only for logins saved for the page's
+  registrable domain (Public Suffix List, including private suffixes such as
+  `github.io`). `fill` returns a password only for one entry the user picked,
+  and the app re-checks that entry against the frame's site. Logins saved for
+  `https` are never offered on `http`. A save can update only an entry that
+  matches the page, and the previous password stays in the entry history.
+- **Consent.** An HTTP page, or a login form inside a frame from another
+  origin, needs the user to tick "Fill anyway" for each fill. Before filling,
+  the content script checks that the frame is still on the origin that
+  KeyRoam approved.
+- **Save prompts** are drawn in a closed shadow root and act only on trusted
+  (real) clicks. The submitted password stays in the background script's
+  session storage for at most two minutes. The page sees only the site and
+  the username.
+
 ## What Google (or a Drive attacker) can observe
 
 - That the account uses KeyRoam, the number of devices, and when each syncs.
@@ -135,7 +168,13 @@ See [sync-protocol.md](sync-protocol.md). Security-relevant properties:
 6. **No inter-process lock.** Two KeyRoam processes writing the same data
    directory at the same moment could lose a local edit. Planned: an advisory
    file lock.
-7. **Desktop app:** the app auto-locks after 5 min of inactivity and clears copied
+7. **Local processes and autofill.** While the desktop app is unlocked,
+   another program running as the same user could read the endpoint file and
+   ask for logins, just as the extension does. Native messaging cannot tell
+   such a program apart from the browser. Malware running as the user could
+   equally read browser memory or log keystrokes, so this is outside the
+   threat model. It is a reason to keep the auto-lock short.
+8. **Desktop app:** the app auto-locks after 5 min of inactivity and clears copied
    passwords from the clipboard after 30 s. It does not yet lock when the OS
    locks or sleeps. Dart strings that hold secrets cannot be wiped, so they
    remain in memory until garbage-collected.

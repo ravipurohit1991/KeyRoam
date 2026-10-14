@@ -79,4 +79,22 @@ void main() {
     await api.lock();
     await expectLater(api.listEntries(), throwsA(isA<KeyRoamException>()));
   });
+
+  test('browser autofill channel starts and publishes its endpoint', () async {
+    await api.open(dataDir: dir.path);
+    expect((await api.startAutofill()).running, isTrue);
+    final st = await api.autofillStatus();
+    expect(st.running, isTrue);
+    expect(st.browsers.map((b) => b.browser), containsAll(['chrome', 'edge', 'firefox']));
+    expect(st.chromiumExtensionId, hasLength(32));
+    expect(File('${dir.path}${Platform.pathSeparator}autofill-endpoint.json').existsSync(), isTrue);
+    expect(await api.autofillChanges(), 0);
+    if (!st.hostFound) {
+      // The test runner has no keyroam-native-host next to it.
+      await expectLater(
+        api.installAutofill(),
+        throwsA(isA<KeyRoamException>().having((e) => e.code, 'code', 'host_missing')),
+      );
+    }
+  });
 }

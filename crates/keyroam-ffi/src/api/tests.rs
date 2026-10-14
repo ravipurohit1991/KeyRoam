@@ -306,6 +306,77 @@ fn sign_in_into_a_different_vault_is_refused() {
 }
 
 #[test]
+fn browser_autofill_channel() {
+    use keyroam_autofill::ipc::{find_endpoint, send};
+
+    let remote = Shared(Arc::new(MemoryRemote::default()));
+    let a = Device::new();
+    a.sign_in(&remote);
+    a.ok("create_vault", json!({ "password": PW }));
+    a.ok(
+        "add_entry",
+        json!({ "data": { "title": "Example", "username": "alice", "password": "synthetic-1",
+                          "urls": ["https://example.com"] } }),
+    );
+    assert_eq!(a.ok("autofill_start", json!({}))["running"], true);
+    let st = a.ok("autofill_status", json!({}));
+    assert_eq!(st["running"], true);
+    assert_eq!(st["browsers"].as_array().unwrap().len(), 5);
+    // Starting again keeps the same channel.
+    a.ok("autofill_start", json!({}));
+
+    let dir = std::path::PathBuf::from(a.ok("state", json!({}))["data_dir"].as_str().unwrap());
+    let ep = find_endpoint(std::slice::from_ref(&dir)).expect("endpoint published");
+    let page = "https://www.example.com/login";
+    let ask = |req: Value| send(&ep, "test", &req).unwrap();
+
+    let r = ask(json!({ "v": 1, "id": 1, "type": "list", "url": page, "top_url": page }));
+    assert_eq!(r["ok"]["logins"][0]["title"], "Example");
+    assert_eq!(a.ok("autofill_changes", json!({}))["revision"], 0);
+
+    let r = ask(json!({ "v": 1, "id": 2, "type": "save", "url": page, "top_url": page,
+                        "username": "bob", "password": "synthetic-2" }));
+    assert_eq!(r["ok"]["result"], "created");
+    assert_eq!(a.ok("autofill_changes", json!({}))["revision"], 1);
+    // The new login is visible to the UI, saved to disk and queued for upload.
+    let listed = a.ok("list_entries", json!({}));
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    assert_eq!(a.ok("state", json!({}))["sync"]["pending_upload"], true);
+
+    // Locked: autofill reports it and reveals nothing.
+    a.ok("lock", json!({}));
+    let r = ask(json!({ "v": 1, "id": 3, "type": "list", "url": page, "top_url": page }));
+    assert_eq!(r["error"]["code"], "locked");
+    let r = ask(json!({ "v": 1, "id": 4, "type": "status" }));
+    assert_eq!(r["ok"]["state"], "locked");
+
+    // After unlocking, the saved login is still there.
+    a.ok("unlock", json!({ "password": PW }));
+    let r = ask(json!({ "v": 1, "id": 5, "type": "list", "url": page, "top_url": page }));
+    assert_eq!(r["ok"]["logins"].as_array().unwrap().len(), 2);
+
+    a.ok("autofill_stop", json!({}));
+    assert_eq!(a.ok("autofill_status", json!({}))["running"], false);
+    assert!(find_endpoint(&[dir]).is_none());
+}
+
+#[test]
+fn autofill_install_needs_the_host() {
+    let a = Device::new();
+    let missing = a._dir.path().join("no-such-host");
+    assert_eq!(
+        a.err("autofill_install", json!({ "host_path": missing.to_str().unwrap() })),
+        "host_missing"
+    );
+    // Without an opened store the channel cannot start.
+    let e = Engine::with_kdf_cost(KdfCost::MINIMUM);
+    assert_eq!(
+        e.dispatch("autofill_start", json!({})).unwrap_err().code,
+        "invalid_request"
+    );
+}
+
+#[test]
 fn civil_dates() {
     assert_eq!(civil_date(0), (1970, 1, 1));
     assert_eq!(civil_date(19_723), (2024, 1, 1));

@@ -60,6 +60,20 @@ jobs:
       # Real-engine FFI tests (the build hook compiles Rust) + UI flow tests.
       - run: flutter test
 
+  extension:
+    name: Browser extension tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser-extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test
+      - run: npm run build
+
   audit:
     runs-on: ubuntu-latest
     steps:

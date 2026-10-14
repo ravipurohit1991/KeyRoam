@@ -16,6 +16,9 @@ class FakeKeyRoamApi implements KeyRoamApi {
   bool offline = false;
   String syncStatus = 'never';
   int syncCount = 0;
+  int autofillRevision = 0;
+  bool autofillHostFound = true;
+  bool browsersRegistered = false;
   final calls = <String>[];
   final _entries = <String, EntryDetail>{};
   final _deleted = <String>{};
@@ -214,5 +217,41 @@ class FakeKeyRoamApi implements KeyRoamApi {
   Future<void> changePassword(String current, String newPassword) async {
     if (current != password) throw const KeyRoamException('wrong_password', 'wrong');
     password = newPassword;
+  }
+
+  AutofillStatus get _autofill => AutofillStatus(
+    running: true,
+    hostPath: '/synthetic/keyroam-native-host',
+    hostFound: autofillHostFound,
+    browsers: [
+      for (final b in ['chrome', 'edge', 'firefox'])
+        BrowserRegistration(browser: b, location: 'synthetic/$b', installed: browsersRegistered),
+    ],
+  );
+
+  @override
+  Future<AutofillStatus> startAutofill() async {
+    _log('startAutofill');
+    return _autofill;
+  }
+
+  @override
+  Future<AutofillStatus> autofillStatus() async => _autofill;
+
+  @override
+  Future<AutofillStatus> installAutofill() async {
+    _log('installAutofill');
+    if (!autofillHostFound) throw const KeyRoamException('host_missing', 'keyroam-native-host was not found');
+    browsersRegistered = true;
+    return _autofill;
+  }
+
+  @override
+  Future<int> autofillChanges() async => autofillRevision;
+
+  /// Simulate the browser extension saving a login through the app.
+  void saveFromBrowser(EntryData data) {
+    seed(data);
+    autofillRevision++;
   }
 }

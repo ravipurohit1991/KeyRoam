@@ -41,6 +41,8 @@ class Dashboard extends StatelessWidget {
             ),
           ),
         );
+      case 'autofill':
+        await showAutofillDialog(context, controller);
       case 'signout':
         await controller.signOut();
       case 'lock':
@@ -83,6 +85,7 @@ class Dashboard extends StatelessWidget {
               const PopupMenuItem(value: 'export', child: Text('Export encrypted backup…')),
               const PopupMenuItem(value: 'import', child: Text('Restore from backup…')),
               const PopupMenuItem(value: 'password', child: Text('Change master password…')),
+              if (controller.browserAutofill) const PopupMenuItem(value: 'autofill', child: Text('Browser autofill…')),
               const PopupMenuDivider(),
               if (state.signedIn)
                 const PopupMenuItem(value: 'signout', child: Text('Sign out of Google on this device'))

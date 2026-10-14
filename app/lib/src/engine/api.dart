@@ -51,6 +51,14 @@ abstract class KeyRoamApi {
   Future<int> exportBackup(String path, String password, {bool overwrite = false});
   Future<ImportResult> importBackup(String path, String password);
   Future<void> changePassword(String current, String newPassword);
+
+  // Browser autofill (desktop only): the local channel used by the extension's
+  // native-messaging host, its registration with the browsers, and a revision
+  // counter that changes when the extension saves a login.
+  Future<AutofillStatus> startAutofill();
+  Future<AutofillStatus> autofillStatus();
+  Future<AutofillStatus> installAutofill();
+  Future<int> autofillChanges();
 }
 
 /// [KeyRoamApi] backed by the Rust engine. Every call runs on a short-lived
@@ -155,4 +163,16 @@ class NativeKeyRoamApi implements KeyRoamApi {
   @override
   Future<void> changePassword(String current, String newPassword) =>
       _call('change_password', {'current': current, 'new': newPassword});
+
+  Future<AutofillStatus> _autofill(String method) async =>
+      AutofillStatus.fromJson(await _call(method) as Map<String, dynamic>);
+
+  @override
+  Future<AutofillStatus> startAutofill() => _autofill('autofill_start');
+  @override
+  Future<AutofillStatus> autofillStatus() => _autofill('autofill_status');
+  @override
+  Future<AutofillStatus> installAutofill() => _autofill('autofill_install');
+  @override
+  Future<int> autofillChanges() async => (await _call('autofill_changes') as Map<String, dynamic>)['revision'] as int;
 }

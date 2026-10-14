@@ -17,6 +17,7 @@ class AppTimings {
     this.syncDebounce = const Duration(seconds: 2),
     this.autoLock = const Duration(minutes: 5),
     this.clipboardClear = const Duration(seconds: 30),
+    this.autofillPoll = const Duration(seconds: 2),
   });
 
   final Duration periodicSync;
@@ -24,14 +25,23 @@ class AppTimings {
   final Duration syncDebounce;
   final Duration autoLock;
   final Duration clipboardClear;
+
+  /// How often the UI checks for logins saved by the browser extension.
+  final Duration autofillPoll;
 }
 
 /// Application state and behaviour shared by all screens.
 class AppController extends ChangeNotifier {
-  AppController(this.api, {this.timings = const AppTimings()});
+  AppController(this.api, {this.timings = const AppTimings(), this.browserAutofill = false});
 
   final KeyRoamApi api;
   final AppTimings timings;
+
+  /// Serve the browser extension (desktop only).
+  final bool browserAutofill;
+  AutofillStatus? autofill;
+  String? autofillError;
+  int _autofillRevision = 0;
 
   AppState? state;
   String? fatalError;
@@ -49,6 +59,7 @@ class AppController extends ChangeNotifier {
   Timer? _retry;
   Timer? _idle;
   Timer? _clipboard;
+  Timer? _autofillPoll;
   bool _disposed = false;
 
   Phase get phase {
@@ -68,6 +79,7 @@ class AppController extends ChangeNotifier {
     } on KeyRoamException catch (e) {
       fatalError = e.message;
     }
+    if (browserAutofill && fatalError == null) await _startAutofill();
     _notify();
   }
 
@@ -107,6 +119,10 @@ class AppController extends ChangeNotifier {
     _periodic?.cancel();
     _periodic = Timer.periodic(timings.periodicSync, (_) => this.syncNow(quiet: true));
     userActivity();
+    if (browserAutofill) {
+      _autofillPoll?.cancel();
+      _autofillPoll = Timer.periodic(timings.autofillPoll, (_) => _checkAutofill());
+    }
     if (syncNow) {
       // Sync when the vault is opened.
       unawaited(this.syncNow(quiet: true));
@@ -114,7 +130,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> lock() async {
-    for (final t in [_periodic, _debounce, _retry, _idle]) {
+    for (final t in [_periodic, _debounce, _retry, _idle, _autofillPoll]) {
       t?.cancel();
     }
     await api.lock();
@@ -248,6 +264,53 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  // ----- browser autofill -----
+
+  Future<void> _startAutofill() async {
+    try {
+      autofill = await api.startAutofill();
+      _autofillRevision = await api.autofillChanges();
+      autofillError = null;
+    } on KeyRoamException catch (e) {
+      autofillError = e.message;
+    }
+  }
+
+  /// Pick up logins saved by the browser extension: refresh and sync. Autofill
+  /// requests do not count as user activity, so auto-lock still applies.
+  Future<void> _checkAutofill() async {
+    if (phase != Phase.unlocked) return;
+    try {
+      final revision = await api.autofillChanges();
+      if (revision == _autofillRevision) return;
+      _autofillRevision = revision;
+      notice = 'Login saved from your browser';
+      await _modified();
+    } on KeyRoamException {
+      // The next tick retries.
+    }
+  }
+
+  Future<AutofillStatus?> refreshAutofillStatus() async {
+    try {
+      autofill = await api.autofillStatus();
+      autofillError = null;
+    } on KeyRoamException catch (e) {
+      autofillError = e.message;
+    }
+    _notify();
+    return autofill;
+  }
+
+  /// Register the bundled native-messaging host with the installed browsers.
+  /// Throws [KeyRoamException] with instructions when that is not possible.
+  Future<AutofillStatus> installBrowserIntegration() async {
+    final s = await api.installAutofill();
+    autofill = s;
+    _notify();
+    return s;
+  }
+
   // ----- clipboard -----
 
   /// Copy a secret and clear the clipboard after a delay if it is unchanged.
@@ -296,7 +359,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    for (final t in [_periodic, _debounce, _retry, _idle, _clipboard]) {
+    for (final t in [_periodic, _debounce, _retry, _idle, _clipboard, _autofillPoll]) {
       t?.cancel();
     }
     super.dispose();

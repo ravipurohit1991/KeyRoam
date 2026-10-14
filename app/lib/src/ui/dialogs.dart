@@ -468,3 +468,110 @@ Future<void> showSignInDialog(BuildContext context, AppController c, Widget sign
     builder: (_) => AlertDialog(content: SizedBox(width: 480, child: signInStep)),
   );
 }
+
+/// Browser autofill: shows whether the browsers know about KeyRoam's
+/// native-messaging host and registers it on request.
+Future<void> showAutofillDialog(BuildContext context, AppController c) async {
+  await c.refreshAutofillStatus();
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (_) => _AutofillDialog(controller: c),
+  );
+}
+
+class _AutofillDialog extends StatefulWidget {
+  const _AutofillDialog({required this.controller});
+  final AppController controller;
+
+  @override
+  State<_AutofillDialog> createState() => _AutofillDialogState();
+}
+
+class _AutofillDialogState extends State<_AutofillDialog> {
+  String? _error;
+  bool _busy = false;
+
+  Future<void> _install() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.controller.installBrowserIntegration();
+    } catch (e) {
+      if (mounted) setState(() => _error = describeError(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final s = c.autofill;
+    final scheme = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('Browser autofill'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'The KeyRoam browser extension fills and saves logins for the site you are on. '
+              'It talks only to this app, and only while KeyRoam is unlocked. Passwords are never '
+              'filled on insecure (HTTP) pages or into another site\'s embedded form without asking you first.',
+            ),
+            const SizedBox(height: 16),
+            if (s == null || !s.running)
+              Text(
+                'Browser integration is not running${c.autofillError == null ? '' : ': ${c.autofillError}'}',
+                style: TextStyle(color: scheme.error),
+              )
+            else ...[
+              for (final b in s.browsers)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    b.installed ? Icons.check_circle : Icons.radio_button_unchecked,
+                    color: b.installed ? scheme.primary : scheme.outline,
+                  ),
+                  title: Text(b.displayName),
+                  subtitle: Text(b.installed ? 'Connected to KeyRoam' : 'Not set up'),
+                ),
+              if (!s.hostFound)
+                Text(
+                  'This build does not include the browser helper (keyroam-native-host). '
+                  'Expected at: ${s.hostPath ?? 'unknown'}',
+                  style: TextStyle(color: scheme.error),
+                ),
+              const SizedBox(height: 8),
+              Text(
+                'After setting up, install the KeyRoam extension in your browser and restart the browser.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              SelectableText(_error!, style: TextStyle(color: scheme.error)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        if (s != null && s.running)
+          FilledButton(
+            key: const Key('setUpBrowsers'),
+            onPressed: _busy || !s.hostFound ? null : _install,
+            child: _busy
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : Text(s.anyBrowserRegistered ? 'Set up again' : 'Set up browsers'),
+          ),
+      ],
+    );
+  }
+}

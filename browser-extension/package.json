@@ -1,0 +1,14 @@
+{
+  "name": "keyroam-browser-extension",
+  "version": "0.2.0",
+  "private": true,
+  "description": "KeyRoam browser extension (Manifest V3) for Chromium-based browsers and Firefox.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test",
+    "icons": "node tools/make-icons.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -9,12 +9,23 @@
 //! may arrive concurrently from several Dart isolates: the session mutex
 //! serialises them, and long Google sign-in waits run without holding it so
 //! they can be cancelled.
+//!
+//! On desktop the engine also serves the browser extension: `autofill_start`
+//! opens the local channel used by `keyroam-native-host` (see
+//! `keyroam_autofill::ipc`). Requests on that channel are answered from the
+//! same session, so autofill works only while the app is unlocked. Changes it
+//! makes (saved logins) bump a revision that the UI polls with
+//! `autofill_changes`, so the UI can refresh and sync.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use keyroam_autofill::install::{self as autofill_install, InstallOptions};
+use keyroam_autofill::ipc::{Handler, Server as AutofillServer};
+use keyroam_autofill::protocol::{codes as autofill_codes, ProtocolError};
+use keyroam_autofill::service::{self as autofill, VaultAccess};
 use keyroam_core::files::{detect_format, BACKUP_FORMAT, LOCAL_VAULT_FORMAT};
 use keyroam_core::generator::{generate_password, GeneratorOptions};
 use keyroam_core::header::check_password_policy;
@@ -120,7 +131,10 @@ struct Session {
 }
 
 pub struct Engine {
-    session: Mutex<Session>,
+    session: Arc<Mutex<Session>>,
+    autofill: Mutex<Option<AutofillServer>>,
+    /// Incremented whenever an autofill request changes the vault.
+    autofill_revision: Arc<AtomicU64>,
     pending: Mutex<Option<PendingAuthorization>>,
     cancel: AtomicBool,
     kdf_cost: KdfCost,
@@ -237,7 +251,9 @@ fn parse_id(s: &str) -> ApiResult<keyroam_core::EntryId> {
 impl Engine {
     pub fn with_kdf_cost(kdf_cost: KdfCost) -> Self {
         Engine {
-            session: Mutex::new(Session::default()),
+            session: Arc::new(Mutex::new(Session::default())),
+            autofill: Mutex::new(None),
+            autofill_revision: Arc::new(AtomicU64::new(0)),
             pending: Mutex::new(None),
             cancel: AtomicBool::new(false),
             kdf_cost,
@@ -310,6 +326,14 @@ impl Engine {
             "import_backup" => self.import(params(p)?),
             "change_password" => self.change_password(params(p)?),
             "sign_out" => self.sign_out(),
+            "autofill_start" => self.autofill_start(),
+            "autofill_stop" => {
+                *lock(&self.autofill) = None;
+                Ok(Value::Null)
+            }
+            "autofill_status" => self.autofill_status(),
+            "autofill_install" => self.autofill_install(params(p)?),
+            "autofill_changes" => Ok(json!({ "revision": self.autofill_revision.load(Ordering::SeqCst) })),
             other => Err(ApiError::new("invalid_request", format!("unknown method {other}"))),
         }
     }
@@ -693,6 +717,109 @@ impl Engine {
     }
 }
 
+// ----- browser autofill -----
+
+/// Executable name of the native-messaging host shipped next to the app.
+const NATIVE_HOST_EXE: &str = if cfg!(windows) {
+    "keyroam-native-host.exe"
+} else {
+    "keyroam-native-host"
+};
+
+/// Where the bundled native host is expected: `KEYROAM_NATIVE_HOST`, or next
+/// to the running executable (inside `KeyRoam.app/Contents/MacOS` on macOS).
+fn native_host_path() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("KEYROAM_NATIVE_HOST").filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    Some(std::env::current_exe().ok()?.parent()?.join(NATIVE_HOST_EXE))
+}
+
+/// Answers native-host requests from the shared session.
+fn autofill_handler(session: Arc<Mutex<Session>>, revision: Arc<AtomicU64>) -> Handler {
+    Arc::new(move |req, _caller| {
+        let mut guard = lock(&session);
+        let s = &mut *guard;
+        let has_vault = s.store.as_ref().is_some_and(|st| st.has_vault());
+        let access = match s.vault.as_mut() {
+            Some(v) => VaultAccess::Unlocked(v),
+            None if has_vault => VaultAccess::Locked,
+            None => VaultAccess::NoVault,
+        };
+        let outcome = autofill::handle(&req.command, access)?;
+        if outcome.changed {
+            if let (Some(vault), Some(store)) = (s.vault.as_ref(), s.store.as_ref()) {
+                commit_local_change(vault, store)
+                    .map_err(|e| ProtocolError::new(autofill_codes::INTERNAL, e.to_string()))?;
+            }
+            revision.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(outcome.body)
+    })
+}
+
+impl Engine {
+    /// Start (or keep) the local channel for the browser extension. Runs at
+    /// every app start, so it skips the browser registration checks (which
+    /// spawn `reg.exe` on Windows); `autofill_status` reports those.
+    fn autofill_start(&self) -> ApiResult {
+        let dir = Self::store(&lock(&self.session))?.root().to_path_buf();
+        let mut server = lock(&self.autofill);
+        if server.as_ref().is_none_or(|s| s.dir() != dir) {
+            *server = None;
+            let handler = autofill_handler(self.session.clone(), self.autofill_revision.clone());
+            *server = Some(
+                AutofillServer::start(&dir, handler)
+                    .map_err(|e| ApiError::new("io", format!("could not start browser integration: {e}")))?,
+            );
+        }
+        Ok(json!({ "running": true }))
+    }
+
+    fn autofill_status(&self) -> ApiResult {
+        let running = lock(&self.autofill).is_some();
+        let host = native_host_path();
+        Ok(json!({
+            "running": running,
+            "host_path": host.as_ref().map(|p| p.display().to_string()),
+            "host_found": host.as_ref().is_some_and(|p| p.is_file()),
+            "browsers": autofill_install::status(),
+            "chromium_extension_id": autofill_install::CHROMIUM_EXTENSION_ID,
+            "firefox_extension_id": autofill_install::FIREFOX_EXTENSION_ID,
+        }))
+    }
+
+    /// Register the bundled native host with the browsers.
+    fn autofill_install(&self, p: AutofillInstallParams) -> ApiResult {
+        let host_path = p
+            .host_path
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from)
+            .or_else(native_host_path)
+            .ok_or_else(|| ApiError::new("host_missing", "cannot locate keyroam-native-host"))?;
+        if !host_path.is_file() {
+            return Err(ApiError::new(
+                "host_missing",
+                format!("keyroam-native-host was not found at {}", host_path.display()),
+            ));
+        }
+        autofill_install::install(&InstallOptions {
+            host_path: host_path.clone(),
+            extra_chromium_ids: p.extension_ids,
+        })
+        .map_err(|e| {
+            ApiError::new(
+                "install_failed",
+                format!(
+                    "could not register with the browsers ({e}). Run this in a terminal instead: \"{}\" install",
+                    host_path.display()
+                ),
+            )
+        })?;
+        self.autofill_status()
+    }
+}
+
 fn default_backup_path(dir: Option<String>) -> String {
     let dir = dir
         .filter(|d| !d.is_empty())
@@ -802,6 +929,14 @@ struct ExportParams {
 struct ImportParams {
     path: String,
     password: String,
+}
+
+#[derive(Deserialize)]
+struct AutofillInstallParams {
+    #[serde(default)]
+    host_path: Option<String>,
+    #[serde(default)]
+    extension_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]

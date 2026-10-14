@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'src/app/controller.dart';
@@ -7,7 +9,9 @@ import 'src/ui/app.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final controller = AppController(NativeKeyRoamApi());
+  // The browser extension is served on desktop only.
+  final desktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+  final controller = AppController(NativeKeyRoamApi(), browserAutofill: desktop);
   runApp(KeyRoamApp(controller: controller));
   // Data directory: KEYROAM_HOME if set, otherwise the platform default
   // (reported by the host app on Android).

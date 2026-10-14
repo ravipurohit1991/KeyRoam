@@ -25,7 +25,7 @@ Google Drive), every device.
 | 2 | Google OAuth 2.0 + PKCE | ✅ Done: `keyroam-sync::oauth`, with tests |
 | 3 | Encrypted Google Drive sync | ✅ Done: `keyroam-sync::engine` / `drive`, with tests |
 | 4 | Windows and macOS desktop apps (Flutter) | ✅ Done: `app/` + `keyroam-ffi`, with tests (macOS built in CI only) |
-| 5 | Desktop browser autofill extension | ⏳ Next |
+| 5 | Desktop browser autofill extension | ✅ Done: `browser-extension/` + `keyroam-native-host`, with tests |
 | 6 | Android app + Credential Manager provider | 🔨 App builds in CI (APK/AAB); sign-in & autofill pending |
 | 7 | iOS app + AutoFill Credential Provider extension | 🔨 App builds in CI (unsigned); sign-in & autofill pending |
 | 8 | Cross-device tests, security review, packaging | Planned |
@@ -43,7 +43,11 @@ crates/
                   client, sync protocol, onboarding flows.
   keyroam-cli/    `keyroam` command-line client.
   keyroam-ffi/    C ABI (JSON request/response) used by the Flutter app.
+  keyroam-autofill/    Browser autofill: public-suffix-aware origin matching,
+                       the native-messaging protocol, the app's local channel.
+  keyroam-native-host/ Native-messaging host started by the browsers.
 app/              Flutter desktop app (Windows, macOS). See app/README.md.
+browser-extension/ Manifest V3 extension for Chromium browsers and Firefox.
 docs/
   architecture.md       Components and how the apps fit together
   security.md           Cryptographic design, threat model, limitations
@@ -63,6 +67,7 @@ each push to `main`. You can download them from the run page under
 | `KeyRoam-macos-universal` | macOS app, Apple silicon and Intel (unsigned) |
 | `KeyRoam-android` | `KeyRoam-android.apk` and `.aab` (signed with a debug key) |
 | `KeyRoam-ios-unsigned` | Unsigned `.ipa`. It needs re-signing before it can be installed |
+| `KeyRoam-extension` | Browser extension for Chrome, Edge and Brave (`-chromium.zip`) and Firefox (`-firefox.zip`) |
 | `keyroam-cli-*` | Command-line client for Linux, Windows and macOS |
 
 Pushing a tag such as `v0.2.0` publishes the same files as a GitHub
@@ -75,7 +80,7 @@ CLI, add the repository secrets `KEYROAM_GOOGLE_CLIENT_ID` and
 You need a stable Rust toolchain (<https://rustup.rs>).
 
 ```sh
-cargo test --workspace      # 85 tests: crypto, merge properties, sync, OAuth, FFI, CLI
+cargo test --workspace      # 131 tests: crypto, merge, sync, OAuth, FFI, CLI, autofill, native host
 cargo build --release -p keyroam-cli
 ```
 
@@ -91,6 +96,19 @@ flutter test                # real-engine FFI tests + UI flow tests
 ```
 
 See [app/README.md](app/README.md) for the full details.
+
+## Browser autofill
+
+The KeyRoam extension fills and saves logins in Chrome, Edge, Brave and
+Firefox. It talks only to the desktop app on the same computer, and only
+while the app is unlocked. See
+[browser-extension/README.md](browser-extension/README.md).
+
+```sh
+cd browser-extension
+npm test                    # form, frame, prompt, protocol and manifest tests
+npm run build               # dist/chromium and dist/firefox
+```
 
 ## Using the CLI
 

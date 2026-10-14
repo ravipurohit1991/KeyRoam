@@ -60,6 +60,30 @@ process-wide `Engine` holds the open vault. Long Google sign-in waits run
 without holding the session lock, so they can be cancelled. The Flutter app
 builds and bundles this library through `app/hook/build.dart`.
 
+### `keyroam-autofill` and `keyroam-native-host` (browser autofill)
+
+```
+extension ──native messaging──► keyroam-native-host ──127.0.0.1 + token──► desktop app (keyroam-ffi)
+ (MV3)      length-prefixed JSON    (started by the browser)                    unlocked vault
+```
+
+| Module | Responsibility |
+|---|---|
+| `origin` | Page origin and site (registrable domain from the Public Suffix List), matching saved URLs, consent rules for HTTP pages and cross-origin frames |
+| `protocol` | Request and response types, native-messaging framing, size limits, error codes |
+| `service` | `status`, `list`, `fill`, `check_save` and `save`, answered against the vault |
+| `ipc` | The app's loopback listener, the `autofill-endpoint.json` file with port and token, and the host's client |
+| `install` | Host manifests and registry keys for Chrome, Chromium, Edge, Brave and Firefox |
+
+`keyroam-native-host` is a small executable shipped next to the desktop app.
+Browsers start it for the extension. It relays one message at a time and
+never opens the vault. Inside the app, `keyroam-ffi` runs the listener on the
+same session the UI uses. When an autofill request saves a login, the engine
+bumps a revision that the UI polls so it can refresh and sync.
+
+The extension (`browser-extension/`) is plain JavaScript with no build-time
+dependencies. Its logic (`src/lib/`) has unit tests in Node.
+
 ### `keyroam-cli`
 
 The reference front-end and the runnable deliverable for milestones 1–3. Every
@@ -69,7 +93,6 @@ operation the GUI apps will offer is available here first.
 
 | Milestone | Component | Notes |
 |---|---|---|
-| 5 | `browser-extension/` (Manifest V3, Chromium and Firefox) and a native-messaging host | The extension talks only to the locally installed KeyRoam desktop app through native messaging. It never sees the vault, only the credentials the user picks for the current origin. URL matching uses the registrable domain (public-suffix aware). |
 | 6 | Android `CredentialProviderService` (Credential Manager, Android 14+) with an `AutofillService` fallback | Sync through WorkManager. OAuth through a custom-scheme redirect with PKCE. |
 | 7 | iOS `ASCredentialProviderViewController` extension | A shared App Group container for the encrypted vault, unlocked with the master password or Face ID. The key is wrapped in a Keychain item limited to biometry. Sync through BGAppRefreshTask. |
 | 8 | Cross-device test matrix, external security review, signed installers (MSIX, notarised DMG, Play, App Store) | |

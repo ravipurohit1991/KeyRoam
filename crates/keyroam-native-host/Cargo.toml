@@ -1,0 +1,19 @@
+[package]
+name = "keyroam-native-host"
+description = "Native-messaging host that connects the KeyRoam browser extension to the running KeyRoam desktop app."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "keyroam-native-host"
+path = "src/main.rs"
+
+[dependencies]
+keyroam-autofill = { path = "../keyroam-autofill" }
+serde_json.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+keyroam-core = { path = "../keyroam-core" }
+tempfile.workspace = true

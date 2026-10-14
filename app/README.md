@@ -74,6 +74,24 @@ flutter test
 - **Copied passwords** are cleared from the clipboard after 30 s, provided the
   clipboard still holds them.
 
+## Browser autofill
+
+On Windows and macOS the app also serves the KeyRoam browser extension
+(`../browser-extension`). At startup it opens a loopback listener and writes
+its port and a random token to `autofill-endpoint.json` in the data folder.
+The listener answers only while the vault is unlocked. When the extension
+saves a login, the app shows it within about 2 s and syncs it.
+
+**Menu → Browser autofill…** shows which browsers are connected, and
+**Set up browsers** registers the bundled `keyroam-native-host` with them. The
+release builds put that executable next to `keyroam.exe` on Windows and in
+`KeyRoam.app/Contents/MacOS` on macOS. For local development, build it with
+`cargo build -p keyroam-native-host` and point the app at it with
+`KEYROAM_NATIVE_HOST=<path>`. The sandboxed macOS app cannot write browser
+settings itself. On macOS the dialog shows the terminal command to run
+instead:
+`/Applications/KeyRoam.app/Contents/MacOS/keyroam-native-host install`.
+
 ## Mobile builds (Android, iOS)
 
 The same app builds for Android and iOS. The build hook cross-compiles the

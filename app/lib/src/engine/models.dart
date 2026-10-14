@@ -309,3 +309,63 @@ bool _listEq(List<String> a, List<String> b) {
   }
   return true;
 }
+
+/// Registration of the native-messaging host with one browser.
+class BrowserRegistration {
+  const BrowserRegistration({required this.browser, required this.location, required this.installed});
+
+  /// `chrome`, `chromium`, `edge`, `brave` or `firefox`.
+  final String browser;
+  final String location;
+  final bool installed;
+
+  String get displayName => switch (browser) {
+    'chrome' => 'Google Chrome',
+    'chromium' => 'Chromium',
+    'edge' => 'Microsoft Edge',
+    'brave' => 'Brave',
+    'firefox' => 'Firefox',
+    _ => browser,
+  };
+
+  factory BrowserRegistration.fromJson(Map<String, dynamic> j) => BrowserRegistration(
+    browser: j['browser'] as String,
+    location: j['location'] as String? ?? '',
+    installed: j['installed'] as bool? ?? false,
+  );
+}
+
+/// State of the desktop browser integration.
+class AutofillStatus {
+  const AutofillStatus({
+    required this.running,
+    this.hostPath,
+    this.hostFound = false,
+    this.browsers = const [],
+    this.chromiumExtensionId = '',
+    this.firefoxExtensionId = '',
+  });
+
+  /// The app is listening for the browser extension.
+  final bool running;
+
+  /// Where the bundled `keyroam-native-host` is expected.
+  final String? hostPath;
+  final bool hostFound;
+  final List<BrowserRegistration> browsers;
+  final String chromiumExtensionId;
+  final String firefoxExtensionId;
+
+  bool get anyBrowserRegistered => browsers.any((b) => b.installed);
+
+  factory AutofillStatus.fromJson(Map<String, dynamic> j) => AutofillStatus(
+    running: j['running'] as bool? ?? false,
+    hostPath: j['host_path'] as String?,
+    hostFound: j['host_found'] as bool? ?? false,
+    browsers: [
+      for (final b in (j['browsers'] as List? ?? const [])) BrowserRegistration.fromJson(b as Map<String, dynamic>),
+    ],
+    chromiumExtensionId: j['chromium_extension_id'] as String? ?? '',
+    firefoxExtensionId: j['firefox_extension_id'] as String? ?? '',
+  );
+}

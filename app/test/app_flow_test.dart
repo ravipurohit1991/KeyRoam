@@ -14,6 +14,7 @@ const fastTimings = AppTimings(
   syncDebounce: Duration(milliseconds: 200),
   autoLock: Duration(seconds: 30),
   clipboardClear: Duration(seconds: 1),
+  autofillPoll: Duration(milliseconds: 500),
 );
 
 Future<AppController> start(WidgetTester tester, FakeKeyRoamApi api) async {
@@ -264,6 +265,75 @@ void main() {
     await tester.tap(find.text('All logins'));
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('search')), findsOneWidget);
+    await finish(tester, c);
+  });
+
+  testWidgets('browser autofill: logins saved in the browser appear and sync', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true)..signedIn = true;
+    final c = AppController(api, timings: fastTimings, browserAutofill: true);
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await c.init();
+    await tester.pumpWidget(KeyRoamApp(controller: c));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('startAutofill'));
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+    final syncsBefore = api.syncCount;
+
+    api.saveFromBrowser(const EntryData(title: 'example.com', username: 'alice@example.test'));
+    await tester.pump(fastTimings.autofillPoll);
+    await tester.pumpAndSettle();
+    expect(find.text('example.com'), findsWidgets);
+    expect(find.text('Login saved from your browser'), findsOneWidget);
+    await tester.pump(fastTimings.syncDebounce);
+    await tester.pumpAndSettle();
+    expect(api.syncCount, greaterThan(syncsBefore));
+    await finish(tester, c);
+  });
+
+  testWidgets('browser autofill dialog registers the native host', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = AppController(api, timings: fastTimings, browserAutofill: true);
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    await c.init();
+    await tester.pumpWidget(KeyRoamApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Browser autofill…'));
+    await tester.pumpAndSettle();
+    expect(find.text('Not set up'), findsNWidgets(3));
+    await tester.tap(find.byKey(const Key('setUpBrowsers')));
+    await tester.pumpAndSettle();
+    expect(api.calls, contains('installAutofill'));
+    expect(find.text('Connected to KeyRoam'), findsNWidgets(3));
+    expect(find.text('Set up again'), findsOneWidget);
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+    await finish(tester, c);
+  });
+
+  testWidgets('without browser autofill the menu has no autofill entry', (tester) async {
+    final api = FakeKeyRoamApi(hasVault: true);
+    final c = await start(tester, api);
+    await tester.enterText(find.byKey(const Key('unlockPassword')).first, pw);
+    await tester.tap(find.byKey(const Key('unlock')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('menu')));
+    await tester.pumpAndSettle();
+    expect(find.text('Browser autofill…'), findsNothing);
+    expect(api.calls, isNot(contains('startAutofill')));
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
     await finish(tester, c);
   });
 }
