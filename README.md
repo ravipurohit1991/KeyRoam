@@ -26,7 +26,7 @@ Google Drive), every device.
 | 3 | Encrypted Google Drive sync | ✅ Done: `keyroam-sync::engine` / `drive`, with tests |
 | 4 | Windows and macOS desktop apps (Flutter) | ✅ Done: `app/` + `keyroam-ffi`, with tests (macOS built in CI only) |
 | 5 | Desktop browser autofill extension | ✅ Done: `browser-extension/` + `keyroam-native-host`, with unit and real-browser tests |
-| 6 | Android app + Credential Manager provider | 🔨 App builds in CI (APK/AAB); sign-in & autofill pending |
+| 6 | Android app + Credential Manager provider | ✅ Done: autofill and Credential Manager, mobile sign-in, biometric unlock, background sync |
 | 7 | iOS app + AutoFill Credential Provider extension | 🔨 App builds in CI (unsigned); sign-in & autofill pending |
 | 8 | Cross-device tests, security review, packaging | 🔨 Key rotation, permanent purge and inter-process lock done; review and packaging pending |
 
@@ -81,7 +81,7 @@ CLI, add the repository secrets `KEYROAM_GOOGLE_CLIENT_ID` and
 You need a stable Rust toolchain (<https://rustup.rs>).
 
 ```sh
-cargo test --workspace      # 128 tests: crypto, merge properties, sync, OAuth, autofill, import, FFI, CLI, host
+cargo test --workspace      # 148 tests: crypto, merge properties, sync, OAuth, autofill, import, FFI, CLI, host
 cargo build --release -p keyroam-cli
 ```
 

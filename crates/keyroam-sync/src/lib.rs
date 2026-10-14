@@ -28,6 +28,6 @@ pub use engine::{
 pub use error::{Result, SyncError};
 pub use oauth::{
     authorize_installed_app, open_system_browser, AccessTokenSource, GoogleSession, OAuthClientConfig,
-    PendingAuthorization,
+    PendingAuthorization, RedirectSlot,
 };
 pub use remote::{RemoteFile, RemoteStore};

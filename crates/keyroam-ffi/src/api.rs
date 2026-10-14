@@ -14,15 +14,25 @@
 //! extension through `keyroam_autofill::bridge`, on its own threads and under
 //! the same session mutex. Those requests see the vault only while it is
 //! unlocked.
+//!
+//! On Android the same engine also serves the system: the autofill service,
+//! the Credential Manager provider, background sync and biometric unlock call
+//! it through JNI (`crate::android`). The `android_*` methods answer them,
+//! with the rules of `keyroam_autofill::android`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
+use keyroam_autofill::android::{self as droid, Target};
 use keyroam_autofill::bridge::BridgeServer;
+use keyroam_autofill::matching::SavePlan;
 use keyroam_autofill::protocol::{self, Committer};
 
+use keyroam_core::crypto::SecretKey;
 use keyroam_core::files::{detect_format, BACKUP_FORMAT, LOCAL_VAULT_FORMAT};
 use keyroam_core::generator::{generate_password, GeneratorOptions};
 use keyroam_core::header::check_password_policy;
@@ -30,11 +40,11 @@ use keyroam_core::{
     BackupFile, EntryData, EntryId, EntryRecord, KdfCost, LocalSecrets, LocalStore, LocalVaultFile, Vault, VaultHeader,
     Version,
 };
-use keyroam_sync::oauth::revoke_token;
+use keyroam_sync::oauth::{mobile_redirect_uri, revoke_token};
 use keyroam_sync::{
     adopt_rotated_key, commit_local_change, create_vault, fetch_remote_header, join_vault, open_system_browser,
-    rotate_vault_key, sync, DriveClient, GoogleSession, OAuthClientConfig, PendingAuthorization, RemoteStore,
-    SyncError, SyncReport, SyncState, SyncStatus,
+    rotate_vault_key, sync, DriveClient, GoogleSession, OAuthClientConfig, PendingAuthorization, RedirectSlot,
+    RemoteStore, SyncError, SyncReport, SyncState, SyncStatus,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -135,11 +145,13 @@ pub struct Engine {
     session: Arc<Mutex<Session>>,
     pending: Mutex<Option<PendingAuthorization>>,
     cancel: AtomicBool,
+    /// Receives the mobile sign-in redirect (`oauth_redirect`).
+    redirect: RedirectSlot,
     kdf_cost: KdfCost,
     /// Serves the browser extension while browser integration is on.
     bridge: Mutex<Option<BridgeServer>>,
-    /// Counts vault changes made outside the UI (by the browser extension),
-    /// so the UI knows to refresh.
+    /// Counts vault changes made outside the UI (by the browser extension,
+    /// Android autofill or background sync), so the UI knows to refresh.
     revision: Arc<AtomicU64>,
 }
 
@@ -290,6 +302,7 @@ impl Engine {
             session: Arc::new(Mutex::new(Session::default())),
             pending: Mutex::new(None),
             cancel: AtomicBool::new(false),
+            redirect: RedirectSlot::default(),
             kdf_cost,
             bridge: Mutex::new(None),
             revision: Arc::new(AtomicU64::new(0)),
@@ -332,7 +345,16 @@ impl Engine {
                 let p: P = params(p)?;
                 Ok(json!(default_backup_path(p.dir)))
             }
-            "begin_sign_in" => self.begin_sign_in(),
+            "begin_sign_in" => self.begin_sign_in(params(p)?),
+            "oauth_redirect" => {
+                #[derive(Deserialize)]
+                struct P {
+                    url: String,
+                }
+                let p: P = params(p)?;
+                self.redirect.deliver(&p.url);
+                Ok(Value::Null)
+            }
             "complete_sign_in" => self.complete_sign_in(),
             "cancel_sign_in" => {
                 self.cancel.store(true, Ordering::SeqCst);
@@ -342,6 +364,11 @@ impl Engine {
             "fetch_remote_vault" => self.fetch_remote(),
             "join_vault" => self.join(params(p)?),
             "unlock" => self.unlock(params(p)?),
+            "unlock_with_key" => self.unlock_with_key(params(p)?),
+            "biometric_key" => self.biometric_key(params(p)?),
+            "android_logins" => self.android_logins(params(p)?),
+            "android_credential" => self.android_credential(params(p)?),
+            "android_save" => self.android_save(params(p)?),
             "lock" => {
                 let mut s = lock(&self.session);
                 s.vault = None;
@@ -365,6 +392,7 @@ impl Engine {
             }
             "resolve_conflict" => self.resolve(params(p)?),
             "sync" => self.sync_now(),
+            "sync_if_unlocked" => self.sync_if_unlocked(),
             "export_backup" => self.export(params(p)?),
             "import_backup" => self.import(params(p)?),
             "import_csv" => self.import_csv(params(p)?),
@@ -399,6 +427,12 @@ impl Engine {
             .or_else(|| std::env::var_os("KEYROAM_HOME").map(PathBuf::from))
             .or_else(|| dirs::data_dir().map(|d| d.join("KeyRoam")))
             .ok_or_else(|| ApiError::new("io", "cannot determine a data directory"))?;
+        // Opening the folder that is already open keeps the session: on
+        // Android the autofill service may have opened and unlocked it
+        // before the UI started.
+        if lock(&self.session).store.as_ref().is_some_and(|st| st.root() == dir) {
+            return self.state();
+        }
         lock(&self.bridge).take();
         let store = LocalStore::new(dir);
         *lock(&self.session) = Session {
@@ -480,14 +514,28 @@ impl Engine {
 
     // ----- Google sign-in -----
 
-    fn begin_sign_in(&self) -> ApiResult {
-        let cfg = OAuthClientConfig::from_env()?;
-        let pending = PendingAuthorization::begin(&cfg)?;
+    fn begin_sign_in(&self, p: SignInParams) -> ApiResult {
+        // Mobile apps use the custom-scheme redirect when a mobile client is
+        // configured; otherwise (and on desktop) the loopback redirect.
+        let mobile = match p.redirect.as_deref() {
+            Some("custom") => true,
+            Some("loopback") => false,
+            Some(other) => return Err(ApiError::new("invalid_request", format!("unknown redirect {other}"))),
+            None => cfg!(any(target_os = "android", target_os = "ios")) && OAuthClientConfig::mobile_from_env().is_ok(),
+        };
+        let pending = if mobile {
+            let cfg = OAuthClientConfig::mobile_from_env()?;
+            let uri = mobile_redirect_uri(&cfg.client_id)?;
+            PendingAuthorization::begin_custom_scheme(&cfg, &uri, self.redirect.clone())?
+        } else {
+            PendingAuthorization::begin(&OAuthClientConfig::from_env()?)?
+        };
         let url = pending.url().to_string();
         self.cancel.store(false, Ordering::SeqCst);
         *lock(&self.pending) = Some(pending);
-        let opened = open_system_browser(&url);
-        Ok(json!({ "url": url, "browser_opened": opened }))
+        // On mobile the app opens the page itself (a browser tab).
+        let opened = !mobile && open_system_browser(&url);
+        Ok(json!({ "url": url, "browser_opened": opened, "redirect": if mobile { "custom" } else { "loopback" } }))
     }
 
     fn complete_sign_in(&self) -> ApiResult {
@@ -668,6 +716,30 @@ impl Engine {
         let store = Self::store(&lock(&self.session))?.clone();
         // Argon2 runs without holding the session lock.
         let vault = Vault::open(&store.load_vault()?, &password)?;
+        self.finish_unlock(vault, &store)
+    }
+
+    /// Unlock with a key-encryption key kept by the platform (Android
+    /// Keystore, released by a biometric check). A key from before a
+    /// master-password change or key rotation fails with `wrong_password`.
+    fn unlock_with_key(&self, p: KeyParams) -> ApiResult {
+        let kek = decode_key(&p.key)?;
+        let store = Self::store(&lock(&self.session))?.clone();
+        let vault = Vault::open_with_kek(&store.load_vault()?, &kek)?;
+        self.finish_unlock(vault, &store)
+    }
+
+    /// The key-encryption key for the master password, for the platform to
+    /// keep under biometric protection. The password is checked first.
+    fn biometric_key(&self, p: PasswordParams) -> ApiResult {
+        let password = Zeroizing::new(p.password);
+        let store = Self::store(&lock(&self.session))?.clone();
+        let file = store.load_vault()?;
+        let kek = file.header.derive_kek(&password)?;
+        Ok(json!({ "key": B64.encode(kek.as_bytes()), "vault_id": file.header.vault_id.to_string() }))
+    }
+
+    fn finish_unlock(&self, vault: Vault, store: &LocalStore) -> ApiResult {
         let token = match store.load_secrets()? {
             Some(f) => vault.open_secrets(&f)?.google_refresh_token.clone(),
             None => None,
@@ -780,7 +852,24 @@ impl Engine {
             _ => ApiError::new("not_signed_in", "this device is not signed in to Google"),
         })?;
         let report = sync(vault, &store, remote.as_ref())?;
+        if report.local_changed {
+            self.revision.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(json!({ "report": report_json(&report), "state": self.state_of(s) }))
+    }
+
+    /// Background sync (Android WorkManager): sync only when the vault is
+    /// unlocked and the device is signed in; otherwise there is nothing the
+    /// engine can do without the master password.
+    fn sync_if_unlocked(&self) -> ApiResult {
+        {
+            let s = lock(&self.session);
+            if s.vault.is_none() || s.remote.is_none() {
+                return Ok(json!({ "synced": false }));
+            }
+        }
+        let r = self.sync_now()?;
+        Ok(json!({ "synced": true, "report": r["report"] }))
     }
 
     fn export(&self, p: ExportParams) -> ApiResult {
@@ -895,6 +984,139 @@ impl Engine {
     }
 }
 
+// ----- Android autofill and Credential Manager -----
+
+/// A request from the Android autofill service or Credential Manager
+/// provider: the calling package, the web domain its views report, and the
+/// screen's input fields.
+#[derive(Deserialize)]
+struct AndroidParams {
+    package: String,
+    #[serde(default)]
+    web_domain: Option<String>,
+    #[serde(default)]
+    web_scheme: Option<String>,
+    #[serde(default)]
+    fields: Vec<droid::Field>,
+    /// The app's display name, used as the title of a new entry.
+    #[serde(default)]
+    app_label: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    /// Credential Manager passes the login directly instead of fields.
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<keyroam_autofill::protocol::Secret>,
+}
+
+impl AndroidParams {
+    fn target(&self) -> ApiResult<Target> {
+        Ok(droid::resolve_target(
+            &self.package,
+            self.web_domain.as_deref(),
+            self.web_scheme.as_deref(),
+        )?)
+    }
+}
+
+fn target_json(t: &Target) -> Value {
+    json!({ "kind": t.kind(), "label": t.label() })
+}
+
+impl Engine {
+    /// Logins for the requesting app or page, with their passwords, for an
+    /// autofill response or the Credential Manager's list. While locked, it
+    /// reports only which fields to offer the unlock prompt on.
+    fn android_logins(&self, p: AndroidParams) -> ApiResult {
+        let target = p.target()?;
+        let found = droid::classify(&p.fields);
+        let fields = (!found.is_empty()).then(
+            || json!({ "username": found.username, "password": found.password, "new_password": found.new_password }),
+        );
+        let s = lock(&self.session);
+        let state = match (&s.vault, s.store.as_ref().is_some_and(|st| st.has_vault())) {
+            (Some(_), _) => "unlocked",
+            (None, true) => "locked",
+            (None, false) => "no_vault",
+        };
+        let logins: Vec<Value> = match &s.vault {
+            Some(vault) => droid::find_logins(vault, &target)
+                .into_iter()
+                .filter_map(|m| {
+                    let data = droid::credential_for(vault, m.id, &target)?;
+                    Some(json!({
+                        "id": m.id.to_string(),
+                        "title": m.title,
+                        "username": m.username,
+                        "password": data.password,
+                    }))
+                })
+                .take(droid::MAX_DATASETS)
+                .collect(),
+            None => Vec::new(),
+        };
+        Ok(json!({ "state": state, "target": target_json(&target), "fields": fields, "logins": logins }))
+    }
+
+    /// One login picked in the Credential Manager sheet, re-checked against
+    /// the requesting app.
+    fn android_credential(&self, p: AndroidParams) -> ApiResult {
+        let target = p.target()?;
+        let id = parse_id(p.id.as_deref().unwrap_or_default())?;
+        let s = lock(&self.session);
+        let vault = s
+            .vault
+            .as_ref()
+            .ok_or_else(|| ApiError::new("locked", "the vault is locked"))?;
+        let data = droid::credential_for(vault, id, &target)
+            .ok_or_else(|| ApiError::new("not_found", "this login is not saved for this app"))?;
+        Ok(json!({ "username": data.username, "password": data.password }))
+    }
+
+    /// Save a login the user agreed to save in the system's save prompt:
+    /// update the matching entry's password or add a new entry.
+    fn android_save(&self, p: AndroidParams) -> ApiResult {
+        let target = p.target()?;
+        let (username, password) = match (&p.username, &p.password) {
+            (Some(u), Some(pw)) => (u.trim().to_string(), Zeroizing::new(pw.expose().to_string())),
+            _ => {
+                let (u, pw) = droid::submitted(&p.fields)
+                    .ok_or_else(|| ApiError::new("invalid_input", "no password was entered"))?;
+                (u, Zeroizing::new(pw))
+            }
+        };
+        if password.is_empty() {
+            return Err(ApiError::new("invalid_input", "no password was entered"));
+        }
+        let mut s = lock(&self.session);
+        let (vault, store) = Self::unlocked(&mut s)?;
+        let update_id = match droid::plan_save(vault, &target, &username, &password) {
+            SavePlan::Unchanged { id } => return Ok(json!({ "result": "unchanged", "id": id.to_string() })),
+            SavePlan::Update { id, .. } => Some(id),
+            SavePlan::New => None,
+        };
+        // Apps are titled with their name; web pages (in a browser) with the site.
+        let title = match target {
+            Target::App(_) => p.app_label.as_deref(),
+            Target::Web(_) => None,
+        };
+        let (id, updated) = commit_local_change(vault, store, false, |v| {
+            droid::apply_save(v, &target, &username, &password, update_id, title)
+        })?;
+        self.revision.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({ "result": if updated { "updated" } else { "created" }, "id": id.to_string() }))
+    }
+}
+
+fn decode_key(b64: &str) -> ApiResult<SecretKey> {
+    let bytes = Zeroizing::new(
+        B64.decode(b64.trim())
+            .map_err(|_| ApiError::new("invalid_input", "malformed key"))?,
+    );
+    SecretKey::from_bytes(&bytes).map_err(|_| ApiError::new("invalid_input", "malformed key"))
+}
+
 fn default_backup_path(dir: Option<String>) -> String {
     let dir = dir
         .filter(|d| !d.is_empty())
@@ -953,6 +1175,18 @@ struct OpenParams {
 #[derive(Deserialize)]
 struct PasswordParams {
     password: String,
+}
+
+#[derive(Deserialize)]
+struct KeyParams {
+    key: String,
+}
+
+#[derive(Default, Deserialize)]
+struct SignInParams {
+    /// "loopback" or "custom"; the platform default when absent.
+    #[serde(default)]
+    redirect: Option<String>,
 }
 
 #[derive(Deserialize)]

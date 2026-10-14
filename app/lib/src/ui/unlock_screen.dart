@@ -38,8 +38,24 @@ class _UnlockScreenState extends State<UnlockScreen> {
     }
   }
 
+  Future<void> _unlockWithBiometrics() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.controller.unlockWithBiometrics();
+    } catch (e) {
+      if (mounted) setState(() => _error = describeError(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final bio = widget.controller.biometrics;
     return Scaffold(
       body: CenteredCard(
         child: Column(
@@ -65,6 +81,15 @@ class _UnlockScreenState extends State<UnlockScreen> {
                     : const Text('Unlock'),
               ),
             ),
+            if (bio.enabled && bio.available) ...[
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                key: const Key('biometricUnlock'),
+                onPressed: _busy ? null : _unlockWithBiometrics,
+                icon: const Icon(Icons.fingerprint),
+                label: const Padding(padding: EdgeInsets.all(10), child: Text('Unlock with biometrics')),
+              ),
+            ],
             const SizedBox(height: 16),
             Text(
               'Your master password cannot be recovered. If you have forgotten it, your vault can only be '

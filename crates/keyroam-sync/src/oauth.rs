@@ -2,14 +2,18 @@
 //! and the least-privilege `drive.appdata` scope.
 //!
 //! Desktop flow: a one-shot HTTP listener on `127.0.0.1:<random port>` receives
-//! the authorization code (loopback redirect, RFC 8252 §7.3). Mobile front-ends
-//! obtain the authorization code with their platform's custom-scheme redirect
-//! and call [`exchange_code`] themselves.
+//! the authorization code (loopback redirect, RFC 8252 §7.3).
+//!
+//! Mobile flow (RFC 8252 §7.1): Google redirects to the reversed client id,
+//! a private-use URI scheme (`com.googleusercontent.apps.<id>:/oauth2redirect`)
+//! that the KeyRoam app registers. The platform hands that redirect to
+//! [`RedirectSlot::deliver`]; PKCE protects the code even if another app
+//! registered the same scheme.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
@@ -33,6 +37,10 @@ pub const DRIVE_APPDATA_SCOPE: &str = "https://www.googleapis.com/auth/drive.app
 
 pub const ENV_CLIENT_ID: &str = "KEYROAM_GOOGLE_CLIENT_ID";
 pub const ENV_CLIENT_SECRET: &str = "KEYROAM_GOOGLE_CLIENT_SECRET";
+/// Client id of the Google OAuth client for the mobile apps (Android or iOS
+/// application type). It has no client secret.
+pub const ENV_MOBILE_CLIENT_ID: &str = "KEYROAM_GOOGLE_MOBILE_CLIENT_ID";
+const GOOGLE_CLIENT_SUFFIX: &str = ".apps.googleusercontent.com";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OAuthEndpoints {
@@ -82,16 +90,35 @@ impl OAuthClientConfig {
 
     /// Read the client registration from the environment at runtime, falling
     /// back to values baked in at build time (release builds set these).
+    /// Android and iOS builds use the mobile client.
     pub fn from_env() -> Result<Self> {
-        let pick = |runtime: Option<String>, build: Option<&'static str>| {
-            runtime.or(build.map(String::from)).filter(|s| !s.trim().is_empty())
-        };
-        let id = pick(
+        if cfg!(any(target_os = "android", target_os = "ios")) {
+            return Self::mobile_from_env();
+        }
+        Self::desktop_from_env()
+    }
+
+    /// The mobile client: [`ENV_MOBILE_CLIENT_ID`], no secret.
+    pub fn mobile_from_env() -> Result<Self> {
+        let id = pick_setting(
+            std::env::var(ENV_MOBILE_CLIENT_ID).ok(),
+            option_env!("KEYROAM_GOOGLE_MOBILE_CLIENT_ID"),
+        )
+        .ok_or_else(|| {
+            SyncError::NotConfigured(format!("set {ENV_MOBILE_CLIENT_ID} (see docs/google-cloud-setup.md)"))
+        })?;
+        mobile_redirect_uri(&id)?;
+        Ok(Self::google(id, None))
+    }
+
+    /// The desktop ("Desktop app") client.
+    pub fn desktop_from_env() -> Result<Self> {
+        let id = pick_setting(
             std::env::var(ENV_CLIENT_ID).ok(),
             option_env!("KEYROAM_GOOGLE_CLIENT_ID"),
         )
         .ok_or_else(|| SyncError::NotConfigured(format!("set {ENV_CLIENT_ID} (see docs/google-cloud-setup.md)")))?;
-        let secret = pick(
+        let secret = pick_setting(
             std::env::var(ENV_CLIENT_SECRET).ok(),
             option_env!("KEYROAM_GOOGLE_CLIENT_SECRET"),
         );
@@ -102,6 +129,81 @@ impl OAuthClientConfig {
         check_endpoint(&self.endpoints.auth_url)?;
         check_endpoint(&self.endpoints.token_url)?;
         check_endpoint(&self.endpoints.revoke_url)
+    }
+}
+
+fn pick_setting(runtime: Option<String>, build: Option<&'static str>) -> Option<String> {
+    runtime.or(build.map(String::from)).filter(|s| !s.trim().is_empty())
+}
+
+/// The custom-scheme redirect URI of a Google mobile client: its id reversed,
+/// `com.googleusercontent.apps.<id>:/oauth2redirect`.
+pub fn mobile_redirect_uri(client_id: &str) -> Result<String> {
+    let id = client_id
+        .trim()
+        .strip_suffix(GOOGLE_CLIENT_SUFFIX)
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .ok_or_else(|| SyncError::NotConfigured(format!("{client_id:?} is not a Google OAuth client id")))?;
+    Ok(format!("com.googleusercontent.apps.{id}:/oauth2redirect"))
+}
+
+/// Extract the authorization code from a custom-scheme redirect. The redirect
+/// must be for `redirect_uri` and carry `expected_state` (compared in
+/// constant time).
+pub fn code_from_redirect(redirect: &str, redirect_uri: &str, expected_state: &str) -> Result<Zeroizing<String>> {
+    let url = Url::parse(redirect.trim()).map_err(|_| SyncError::Auth("malformed sign-in redirect".into()))?;
+    let expected = Url::parse(redirect_uri).map_err(|_| SyncError::Auth("malformed redirect URI".into()))?;
+    if url.scheme() != expected.scheme() || url.path() != expected.path() || url.has_host() {
+        return Err(SyncError::Auth("the sign-in redirect is for another app".into()));
+    }
+    let get = |k: &str| url.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
+    let state_ok = get("state").is_some_and(|s| bool::from(s.as_bytes().ct_eq(expected_state.as_bytes())));
+    if !state_ok {
+        return Err(SyncError::Auth("OAuth state mismatch; sign-in aborted".into()));
+    }
+    if let Some(err) = get("error") {
+        return Err(SyncError::Auth(format!("Google sign-in was not completed: {err}")));
+    }
+    get("code")
+        .filter(|c| !c.is_empty())
+        .map(Zeroizing::new)
+        .ok_or_else(|| SyncError::Auth("the sign-in redirect has no authorization code".into()))
+}
+
+/// Where the platform delivers a custom-scheme redirect (on Android, the
+/// activity that receives the redirect intent).
+#[derive(Clone, Default)]
+pub struct RedirectSlot(Arc<(Mutex<Option<Zeroizing<String>>>, Condvar)>);
+
+impl RedirectSlot {
+    pub fn deliver(&self, redirect: &str) {
+        let (slot, ready) = &*self.0;
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Zeroizing::new(redirect.to_string()));
+        ready.notify_all();
+    }
+
+    fn clear(&self) {
+        self.0 .0.lock().unwrap_or_else(|e| e.into_inner()).take();
+    }
+
+    fn wait(&self, timeout: Duration, cancel: &AtomicBool) -> Result<Zeroizing<String>> {
+        let deadline = Instant::now() + timeout;
+        let (slot, ready) = &*self.0;
+        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(redirect) = guard.take() {
+                return Ok(redirect);
+            }
+            if cancel.load(Ordering::SeqCst) {
+                return Err(SyncError::Cancelled);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(SyncError::Auth("timed out waiting for Google sign-in".into()));
+            }
+            let step = (deadline - now).min(Duration::from_millis(100));
+            guard = ready.wait_timeout(guard, step).unwrap_or_else(|e| e.into_inner()).0;
+        }
     }
 }
 
@@ -483,15 +585,46 @@ pub fn authorize_installed_app(
 /// URL, open the browser themselves and offer a Cancel button.
 pub struct PendingAuthorization {
     cfg: OAuthClientConfig,
-    receiver: LoopbackReceiver,
+    receiver: Receiver,
     pkce: Pkce,
     state: String,
     url: String,
 }
 
+enum Receiver {
+    Loopback(LoopbackReceiver),
+    CustomScheme { redirect_uri: String, slot: RedirectSlot },
+}
+
+impl Receiver {
+    fn redirect_uri(&self) -> String {
+        match self {
+            Receiver::Loopback(r) => r.redirect_uri(),
+            Receiver::CustomScheme { redirect_uri, .. } => redirect_uri.clone(),
+        }
+    }
+}
+
 impl PendingAuthorization {
+    /// Desktop: bind a loopback listener for the redirect.
     pub fn begin(cfg: &OAuthClientConfig) -> Result<Self> {
-        let receiver = LoopbackReceiver::bind()?;
+        Self::start(cfg, Receiver::Loopback(LoopbackReceiver::bind()?))
+    }
+
+    /// Mobile: the redirect to `redirect_uri` arrives through `slot`. Anything
+    /// already in the slot (from an earlier attempt) is discarded.
+    pub fn begin_custom_scheme(cfg: &OAuthClientConfig, redirect_uri: &str, slot: RedirectSlot) -> Result<Self> {
+        slot.clear();
+        Self::start(
+            cfg,
+            Receiver::CustomScheme {
+                redirect_uri: redirect_uri.to_string(),
+                slot,
+            },
+        )
+    }
+
+    fn start(cfg: &OAuthClientConfig, receiver: Receiver) -> Result<Self> {
         let pkce = Pkce::generate();
         let state = random_state();
         let url = authorization_url(cfg, &receiver.redirect_uri(), &pkce, &state)?;
@@ -511,8 +644,14 @@ impl PendingAuthorization {
 
     /// Wait for the redirect, then exchange the code for tokens.
     pub fn complete(self, timeout: Duration, cancel: &AtomicBool) -> Result<GoogleSession> {
-        let code = self.receiver.wait_for_code_cancellable(&self.state, timeout, cancel)?;
-        let tokens = exchange_code(&self.cfg, &code, &self.pkce, &self.receiver.redirect_uri())?;
+        let redirect_uri = self.receiver.redirect_uri();
+        let code = match &self.receiver {
+            Receiver::Loopback(r) => r.wait_for_code_cancellable(&self.state, timeout, cancel)?,
+            Receiver::CustomScheme { slot, .. } => {
+                code_from_redirect(&slot.wait(timeout, cancel)?, &redirect_uri, &self.state)?
+            }
+        };
+        let tokens = exchange_code(&self.cfg, &code, &self.pkce, &redirect_uri)?;
         let refresh = tokens.refresh_token.clone().ok_or_else(|| {
             SyncError::Auth("Google did not issue a refresh token; remove KeyRoam's access in your Google account settings and try again".into())
         })?;
@@ -728,6 +867,73 @@ mod tests {
 
         let revoked = GoogleSession::new(cfg, "rt-revoked");
         assert!(matches!(revoked.access_token(), Err(SyncError::AuthRequired(_))));
+    }
+
+    #[test]
+    fn mobile_redirect_uris() {
+        assert_eq!(
+            mobile_redirect_uri("1234-abc.apps.googleusercontent.com").unwrap(),
+            "com.googleusercontent.apps.1234-abc:/oauth2redirect"
+        );
+        assert!(mobile_redirect_uri("1234-abc").is_err());
+        assert!(mobile_redirect_uri(".apps.googleusercontent.com").is_err());
+        assert!(mobile_redirect_uri("evil:x.apps.googleusercontent.com").is_err());
+    }
+
+    #[test]
+    fn custom_scheme_redirects_are_checked() {
+        let uri = "com.googleusercontent.apps.1234-abc:/oauth2redirect";
+        let ok = format!("{uri}?state=s1&code=4%2Fsynthetic&scope=x");
+        assert_eq!(code_from_redirect(&ok, uri, "s1").unwrap().as_str(), "4/synthetic");
+        let code = |r: &str| code_from_redirect(r, uri, "s1").unwrap_err().to_string();
+        assert!(code(&format!("{uri}?state=forged&code=x")).contains("state"));
+        assert!(code(&format!("{uri}?state=s1&error=access_denied")).contains("access_denied"));
+        assert!(code(&format!("{uri}?state=s1")).contains("no authorization code"));
+        assert!(code("com.googleusercontent.apps.other:/oauth2redirect?state=s1&code=x").contains("another app"));
+        assert!(code("com.googleusercontent.apps.1234-abc:/elsewhere?state=s1&code=x").contains("another app"));
+        assert!(code("not a url").contains("malformed"));
+    }
+
+    #[test]
+    fn custom_scheme_sign_in_end_to_end() {
+        let (server, seen) = fake_token_server();
+        let cfg = test_cfg(&server);
+        let uri = "com.googleusercontent.apps.1234-abc:/oauth2redirect";
+        let slot = RedirectSlot::default();
+        slot.deliver("stale redirect from an earlier attempt");
+        let pending = PendingAuthorization::begin_custom_scheme(&cfg, uri, slot.clone()).unwrap();
+        let url = Url::parse(pending.url()).unwrap();
+        let q: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(q["redirect_uri"], uri);
+        assert!(!q.contains_key("client_secret"));
+        agent()
+            .post(&format!("{}/challenge", server.base_url()))
+            .send_string(&q["code_challenge"])
+            .unwrap();
+        let state = q["state"].clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            slot.deliver(&format!("{uri}?state={state}&code=good-code"));
+        });
+        let session = pending
+            .complete(Duration::from_secs(10), &AtomicBool::new(false))
+            .unwrap();
+        t.join().unwrap();
+        assert_eq!(session.refresh_token(), "rt-1");
+        assert!(seen.lock().unwrap().contains(&"authorization_code".to_string()));
+    }
+
+    #[test]
+    fn custom_scheme_sign_in_cancel_and_timeout() {
+        let cfg = OAuthClientConfig::google("1234-abc.apps.googleusercontent.com", None);
+        let uri = mobile_redirect_uri(&cfg.client_id).unwrap();
+        let pending = PendingAuthorization::begin_custom_scheme(&cfg, &uri, RedirectSlot::default()).unwrap();
+        let r = pending.complete(Duration::from_millis(200), &AtomicBool::new(false));
+        assert!(matches!(r, Err(SyncError::Auth(m)) if m.contains("timed out")));
+
+        let pending = PendingAuthorization::begin_custom_scheme(&cfg, &uri, RedirectSlot::default()).unwrap();
+        let r = pending.complete(Duration::from_secs(30), &AtomicBool::new(true));
+        assert!(matches!(r, Err(SyncError::Cancelled)));
     }
 
     #[test]

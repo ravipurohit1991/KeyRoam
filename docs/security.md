@@ -96,6 +96,12 @@ exists.
 - OAuth 2.0 authorisation-code flow with **PKCE (S256)**. The desktop flow uses
   a loopback redirect on `127.0.0.1:<random port>` (RFC 8252) and a random
   `state` value, compared in constant time.
+- The Android app uses a mobile client without a secret. Google redirects to
+  the reversed client id, a private-use URI scheme (RFC 8252 §7.1). The
+  engine accepts only a redirect for that exact scheme and path with the
+  expected `state`. If another app registered the same scheme and caught the
+  redirect, it still could not redeem the code without the PKCE verifier,
+  which never leaves KeyRoam.
 - The only scope requested is `https://www.googleapis.com/auth/drive.appdata`,
   which gives access to KeyRoam's private app folder and nothing else in the
   user's Drive. Token responses that lack this scope are rejected.
@@ -170,6 +176,37 @@ Malware running as the same OS user can read the bridge file and talk to the
 app, as it could also read the screen or the keyboard. KeyRoam does not try to
 defend against a compromised user account.
 
+## Android
+
+- **One engine.** The autofill service, the Credential Manager provider,
+  background sync and biometric unlock call the same Rust engine as the UI
+  (JNI), in the same process. Nothing is decrypted in Kotlin except the
+  key-encryption key during a biometric unlock.
+- **Who is asking.** Android reports the package of the app on screen (and,
+  for Credential Manager, the calling package). Apps see only logins saved
+  for that package (`androidapp://<package>`, or Google Password Manager's
+  `android://…@<package>`). A web domain in the view structure is believed
+  only from known browsers (`keyroam_autofill::android::TRUSTED_BROWSERS`),
+  and then matched by registrable domain with the desktop rules, so logins
+  saved for https are never offered on http. Any other app can put a web
+  domain into its views, so for those apps it is ignored and the app sees
+  only its own logins. KeyRoam never fills its own screens.
+- **Locked means locked.** While the vault is locked, the services offer only
+  an unlock prompt. A vault unlocked from such a prompt locks again after
+  5 minutes unless the app is open, where its own inactivity timer applies.
+- **Saving** happens only after the user accepts the system's save prompt or
+  an app's Credential Manager request. A save can update only a login of the
+  same app or site, and the old password stays in the entry's history.
+- **Biometric unlock.** The KEK is encrypted with an AES-256-GCM key in the
+  Android Keystore that requires a strong biometric for every use and is
+  invalidated when biometrics are added or removed. The encrypted KEK lives
+  in the app's no-backup folder. It is bound to the vault header's salt, so
+  a master-password change or vault-key rotation makes it useless, and the
+  app then turns biometric unlock off.
+- **Background sync** runs only while the vault is unlocked in memory, because
+  merging and uploading need the vault key. KeyRoam never stores the master
+  password or the vault key for background use.
+
 ## Permanent purge
 
 Deleting moves an entry to "recently deleted". **Delete permanently**
@@ -216,3 +253,9 @@ silently). Marks hold only an id and a clock.
    backups and file-system snapshots may keep copies.
 8. **Browser extension:** passwords copied from the extension's generator are
    not cleared from the clipboard automatically.
+9. **Android browser list.** A browser is recognised by its package name only.
+   If a real browser is not installed, a malicious app could install itself
+   under that browser's package name and claim any web domain. Checking each
+   browser's signing certificate is planned.
+10. **Android memory.** Logins handed to Android for filling, and the strings
+   Kotlin builds for the engine, are Java strings that cannot be wiped.

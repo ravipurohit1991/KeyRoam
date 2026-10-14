@@ -85,17 +85,47 @@ compiles and bundles it, and calls run on background isolates.
       and a real-Chromium test that fills, submits and saves through the real
       host and bridge.
 
-## 6. Android
+## ✅ 6. Android
+
+`app/android` (Kotlin), `crates/keyroam-autofill::android` and the JNI entry
+point in `crates/keyroam-ffi`. Kotlin calls the same process-wide Rust engine
+as the Flutter UI, so the system services and the UI share one session and
+one unlocked vault.
 
 - [x] Flutter Android target. The Rust engine is cross-compiled for arm64,
       armv7 and x86_64 with the NDK through the build hook. CI builds the APK
       and AAB. Storage paths come from `MainActivity`.
-- [ ] Mobile Google sign-in: an Android OAuth client with a custom-scheme redirect and PKCE.
-      For now the app opens the desktop loopback flow in the browser.
-- [ ] `CredentialProviderService` (Android 14+) with an `AutofillService`
-      fallback.
-- [ ] WorkManager periodic sync and a connectivity callback.
-- [ ] Biometric unlock (Keystore key wrapping a device-local copy of the KEK).
+- [x] Mobile Google sign-in: a mobile OAuth client (no secret), with PKCE and
+      a redirect to its reversed client id, a private-use URI scheme
+      (`com.googleusercontent.apps.<id>:/oauth2redirect`) that only KeyRoam
+      registers. `OAuthRedirectActivity` hands the redirect to the engine,
+      which checks `state` in constant time and redeems the code. Without a
+      mobile client the app falls back to the loopback flow.
+- [x] `CredentialProviderService` (Android 14+) for passwords, with an
+      `AutofillService` (Android 8+) for apps and browsers. Apps are matched
+      by package name (`androidapp://` and Google Password Manager's
+      `android://…@package` URLs). A browser's reported web domain is
+      believed only from known browsers and matched by registrable domain,
+      as on the desktop. Any other app that claims a web domain sees only its
+      own logins. While KeyRoam is locked, both services offer an unlock
+      prompt; unlocking there locks again after 5 minutes unless the app is
+      in use. Saves go through the system's save prompt.
+- [x] WorkManager periodic sync (every 15 minutes, online) and a sync as
+      soon as connectivity returns, through a WorkManager network constraint
+      and, while the app is open, a `ConnectivityManager` callback. Sync
+      needs the vault key, so it runs only while the vault is unlocked.
+- [x] Biometric unlock: the KEK (the Argon2 output of the master password)
+      is encrypted with an AES-GCM Android Keystore key that needs a strong
+      biometric and is destroyed when biometrics change. A master-password
+      change or vault-key rotation makes the stored KEK stop working, and
+      biometric unlock turns itself off.
+- [x] Tests: 9 Rust tests for app/browser targets, field classification and
+      saving; 4 OAuth tests for the custom-scheme flow (including an
+      end-to-end exchange against a local token endpoint); a core test for
+      KEK unlock; 6 FFI tests; 7 widget tests of the Android flows.
+- [ ] Verified on physical devices. So far: unit and widget tests, CI
+      builds, and an emulator run (see the pull request).
+- [ ] Play Store release (milestone 8).
 
 ## 7. iOS
 

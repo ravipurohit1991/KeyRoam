@@ -194,8 +194,28 @@ impl VaultHeader {
     /// header's integrity.
     pub fn unlock(&self, password: &str) -> Result<SecretKey> {
         self.check_format()?;
+        self.unlock_with_kek(&self.kdf.derive_key(password)?)
+    }
+
+    /// The key-encryption key for `password`, checked against this header.
+    ///
+    /// A device can keep the KEK under hardware protection (Android
+    /// Keystore, biometric) to unlock without typing the password. It is
+    /// bound to this header's salt and KDF parameters, so it stops working
+    /// when the master password is changed or the vault key is rotated.
+    pub fn derive_kek(&self, password: &str) -> Result<SecretKey> {
+        self.check_format()?;
         let kek = self.kdf.derive_key(password)?;
-        let raw = crypto::open(&kek, &self.wrapped_key, &wrap_aad(&self.vault_id, &self.kdf))
+        self.unlock_with_kek(&kek)?;
+        Ok(kek)
+    }
+
+    /// Unwrap the vault key with a KEK from [`VaultHeader::derive_kek`] and
+    /// verify the header's integrity. A KEK for an earlier password or salt
+    /// fails with [`Error::WrongPassword`].
+    pub fn unlock_with_kek(&self, kek: &SecretKey) -> Result<SecretKey> {
+        self.check_format()?;
+        let raw = crypto::open(kek, &self.wrapped_key, &wrap_aad(&self.vault_id, &self.kdf))
             .map_err(|_| Error::WrongPassword)?;
         let key = SecretKey::from_bytes(&raw)?;
         self.verify(&key)?;
@@ -305,6 +325,26 @@ mod tests {
         let k2 = h.unlock(PW).unwrap();
         assert_eq!(key.as_bytes(), k2.as_bytes());
         assert!(matches!(h.unlock("wrong-password-123"), Err(Error::WrongPassword)));
+    }
+
+    #[test]
+    fn kek_unlocks_until_the_password_changes() {
+        let (h, key) = VaultHeader::create(PW, KdfCost::MINIMUM).unwrap();
+        assert!(matches!(h.derive_kek("wrong-password-xyz"), Err(Error::WrongPassword)));
+        let kek = h.derive_kek(PW).unwrap();
+        assert_eq!(h.unlock_with_kek(&kek).unwrap().as_bytes(), key.as_bytes());
+        // A random key is not a KEK.
+        assert!(matches!(
+            h.unlock_with_kek(&SecretKey::generate()),
+            Err(Error::WrongPassword)
+        ));
+        // After a password change (fresh salt) the stored KEK no longer works,
+        // even if the same password is chosen again.
+        let rewrapped = h.rewrap(&key, PW, KdfCost::MINIMUM).unwrap();
+        assert!(matches!(rewrapped.unlock_with_kek(&kek), Err(Error::WrongPassword)));
+        // After a key rotation it no longer works either.
+        let (rotated, _) = h.rotate(&key, PW, KdfCost::MINIMUM).unwrap();
+        assert!(matches!(rotated.unlock_with_kek(&kek), Err(Error::WrongPassword)));
     }
 
     #[test]

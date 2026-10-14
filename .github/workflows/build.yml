@@ -7,6 +7,9 @@ name: Build apps
 #   KEYROAM_GOOGLE_CLIENT_ID / KEYROAM_GOOGLE_CLIENT_SECRET
 #     Google OAuth "Desktop app" client, embedded into the Windows/macOS apps
 #     and the CLI so Google sign-in works out of the box.
+#   KEYROAM_GOOGLE_MOBILE_CLIENT_ID
+#     Google OAuth mobile client (iOS type, or Android with a custom URI
+#     scheme), embedded into the Android app for in-app sign-in.
 
 on:
   push:
@@ -26,6 +29,7 @@ env:
   FLUTTER_VERSION: 3.47.7
   KEYROAM_GOOGLE_CLIENT_ID: ${{ secrets.KEYROAM_GOOGLE_CLIENT_ID }}
   KEYROAM_GOOGLE_CLIENT_SECRET: ${{ secrets.KEYROAM_GOOGLE_CLIENT_SECRET }}
+  KEYROAM_GOOGLE_MOBILE_CLIENT_ID: ${{ secrets.KEYROAM_GOOGLE_MOBILE_CLIENT_ID }}
 
 jobs:
   windows:
@@ -119,6 +123,9 @@ jobs:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+      - name: Embed Google OAuth clients
+        if: env.KEYROAM_GOOGLE_CLIENT_ID != '' || env.KEYROAM_GOOGLE_MOBILE_CLIENT_ID != ''
+        run: .github/scripts/embed-oauth-client.sh
       - name: Build APK and App Bundle
         working-directory: app
         run: |

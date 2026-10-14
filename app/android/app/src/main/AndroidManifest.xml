@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Google OAuth and Drive API -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Sync when connectivity returns -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Biometric unlock -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <application
         android:label="KeyRoam"
         android:name="${applicationName}"
@@ -27,6 +31,57 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Unlocks KeyRoam for autofill and Credential Manager requests. -->
+        <activity
+            android:name=".UnlockActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/UnlockTheme"
+            android:windowSoftInputMode="stateVisible|adjustResize" />
+        <!-- Receives the Google sign-in redirect on the reversed mobile client id
+             (oauthRedirectScheme, set in build.gradle.kts). -->
+        <activity
+            android:name=".OAuthRedirectActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/RedirectTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="${oauthRedirectScheme}" android:path="/oauth2redirect" />
+            </intent-filter>
+        </activity>
+        <!-- Autofill service (Android 8+). -->
+        <service
+            android:name=".KeyRoamAutofillService"
+            android:exported="true"
+            android:label="KeyRoam"
+            android:permission="android.permission.BIND_AUTOFILL_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.autofill.AutofillService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.autofill"
+                android:resource="@xml/autofill_service" />
+        </service>
+        <!-- Credential Manager provider (Android 14+). -->
+        <service
+            android:name=".KeyRoamCredentialService"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="KeyRoam"
+            android:permission="android.permission.BIND_CREDENTIAL_PROVIDER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.credentials.CredentialProviderService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.credentials.provider"
+                android:resource="@xml/credential_provider" />
+        </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

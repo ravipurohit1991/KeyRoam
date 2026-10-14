@@ -11,6 +11,9 @@
 //       keyroam:
 //         google_client_id: "1234-abc.apps.googleusercontent.com"
 //         google_client_secret: "GOCSPX-..."
+//         # Android/iOS client (no secret); Gradle reads it too, for the
+//         # sign-in redirect scheme.
+//         google_mobile_client_id: "1234-def.apps.googleusercontent.com"
 
 import 'dart:io';
 
@@ -29,7 +32,7 @@ void main(List<String> args) async {
     final targetDir = input.outputDirectoryShared.resolve('cargo/');
 
     final env = <String, String>{..._platformEnv(code, target)};
-    for (final key in ['google_client_id', 'google_client_secret']) {
+    for (final key in ['google_client_id', 'google_client_secret', 'google_mobile_client_id']) {
       final value = input.userDefines[key];
       if (value is String && value.isNotEmpty) {
         env['KEYROAM_${key.toUpperCase()}'] = value;

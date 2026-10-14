@@ -103,6 +103,23 @@ flutter build apk --release        # or: flutter build ios --release --no-codesi
 Android builds need the Android NDK. Gradle installs the version Flutter
 pins on the first build.
 
-Not yet implemented on mobile: Google sign-in with the mobile OAuth client
-types, system autofill providers, and OS-scheduled background sync. These are
-milestones 6 and 7 in [../ROADMAP.md](../ROADMAP.md).
+### Android integrations
+
+The Kotlin code in `android/app/src/main/kotlin` reaches the same Rust engine
+as the Flutter UI through JNI (`KeyRoamEngine`, the native library's
+`nativeCall`):
+
+| Component | What it does |
+|---|---|
+| `KeyRoamAutofillService` | Android autofill (8+): fills logins for apps and browser pages, offers to save new ones, and shows an unlock prompt while KeyRoam is locked |
+| `KeyRoamCredentialService` | Credential Manager provider (14+): offers saved passwords in apps' sign-in sheets and saves new ones |
+| `UnlockActivity` | The unlock dialog for those requests (master password or biometrics) |
+| `Biometrics` | Keeps the vault's key-encryption key behind an Android Keystore key that needs a strong biometric |
+| `SyncWorker` | WorkManager sync every 15 minutes and when connectivity returns, while the vault is unlocked |
+| `OAuthRedirectActivity` | Receives the Google sign-in redirect (mobile OAuth client, PKCE) |
+
+In the app, **Menu → Autofill…** opens the system settings to choose KeyRoam,
+and **Menu → Biometric unlock…** turns biometric unlock on or off. The rules
+that decide which logins an app or page may see live in Rust
+(`crates/keyroam-autofill/src/android.rs`) and have tests. iOS integrations are
+milestone 7 in [../ROADMAP.md](../ROADMAP.md).

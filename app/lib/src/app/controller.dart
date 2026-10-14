@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../engine/api.dart';
 import '../engine/models.dart';
+import 'mobile_platform.dart';
 import 'platform_paths.dart';
 
 enum Phase { loading, onboarding, locked, unlocked }
@@ -33,10 +34,15 @@ class AppTimings {
 
 /// Application state and behaviour shared by all screens.
 class AppController extends ChangeNotifier {
-  AppController(this.api, {this.timings = const AppTimings()});
+  AppController(this.api, {this.timings = const AppTimings(), this.mobile});
 
   final KeyRoamApi api;
   final AppTimings timings;
+
+  /// Android integrations (biometric unlock, background sync, autofill);
+  /// null on desktop.
+  final MobilePlatform? mobile;
+  BiometricStatus biometrics = const BiometricStatus();
 
   AppState? state;
   String? fatalError;
@@ -81,6 +87,13 @@ class AppController extends ChangeNotifier {
     } on KeyRoamException catch (e) {
       fatalError = e.message;
     }
+    final m = mobile;
+    if (m != null && fatalError == null) {
+      m.listen(onVaultChanged: () => unawaited(refreshFromPlatform()), onOnline: () => unawaited(syncNow(quiet: true)));
+      await _refreshBiometrics();
+      // The autofill service may have unlocked the vault before the UI started.
+      if (state?.unlocked == true) await _afterUnlock();
+    }
     _notify();
   }
 
@@ -117,6 +130,8 @@ class AppController extends ChangeNotifier {
 
   Future<void> _afterUnlock({bool syncNow = true}) async {
     await refreshEntries();
+    // Android: keep syncing in the background while the vault stays unlocked.
+    unawaited(mobile?.scheduleBackgroundSync().catchError((_) {}));
     _periodic?.cancel();
     _periodic = Timer.periodic(timings.periodicSync, (_) => this.syncNow(quiet: true));
     _watch?.cancel();
@@ -129,16 +144,89 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> lock() async {
+    await api.lock();
+    _clearUnlocked();
+    state = await api.state();
+    _notify();
+  }
+
+  void _clearUnlocked() {
     for (final t in [_periodic, _debounce, _retry, _idle, _watch]) {
       t?.cancel();
     }
-    await api.lock();
     entries = const [];
     selected = null;
     selectedId = null;
     query = '';
-    state = await api.state();
-    _notify();
+  }
+
+  // ----- Android -----
+
+  Future<void> _refreshBiometrics() async {
+    try {
+      biometrics = await mobile?.biometricStatus() ?? const BiometricStatus();
+    } on Exception {
+      biometrics = const BiometricStatus();
+    }
+  }
+
+  /// Unlock with fingerprint or face (Android).
+  Future<void> unlockWithBiometrics() async {
+    try {
+      state = await mobile!.biometricUnlock();
+    } on KeyRoamException catch (e) {
+      // A changed master password or new biometrics turned it off.
+      await _refreshBiometrics();
+      _notify();
+      if (e.code == 'cancelled') return;
+      rethrow;
+    }
+    await _afterUnlock();
+  }
+
+  /// Turn biometric unlock on (needs the master password) or off.
+  Future<void> setBiometricUnlock(bool enabled, {String? password}) async {
+    if (enabled) {
+      await mobile!.enableBiometric(password ?? '');
+    } else {
+      await mobile!.disableBiometric();
+    }
+    await _refreshBiometrics();
+    _say(enabled ? 'Biometric unlock is on' : 'Biometric unlock is off');
+  }
+
+  /// The vault changed outside the UI: unlocked or locked by an autofill
+  /// prompt, a login saved through autofill, or a background sync.
+  Future<void> refreshFromPlatform() async {
+    if (state == null || fatalError != null) return;
+    final AppState now;
+    try {
+      now = await api.state();
+    } on KeyRoamException {
+      return;
+    }
+    final wasUnlocked = phase == Phase.unlocked;
+    if (now.unlocked && !wasUnlocked) {
+      state = now;
+      await _afterUnlock(syncNow: false);
+    } else if (!now.unlocked && wasUnlocked) {
+      _clearUnlocked();
+      state = now;
+      _notify();
+    } else if (now.unlocked && now.revision != _seenRevision) {
+      state = now;
+      await refreshEntries();
+    } else {
+      state = now;
+      _notify();
+    }
+  }
+
+  /// The app came back to the foreground.
+  Future<void> appResumed() async {
+    if (mobile == null) return;
+    await _refreshBiometrics();
+    await refreshFromPlatform();
   }
 
   /// The operating system locked the screen, slept or switched user.
@@ -272,6 +360,7 @@ class AppController extends ChangeNotifier {
       if (e.isOffline) {
         // Retry when connectivity returns.
         _retry = Timer(timings.offlineRetry, () => syncNow(quiet: true));
+        unawaited(mobile?.syncWhenOnline().catchError((_) {}));
         if (!quiet) _say('Offline. Changes are saved on this device and will sync later.');
       } else if (e.code == 'key_rotated') {
         keyRotated = true;

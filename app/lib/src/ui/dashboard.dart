@@ -35,6 +35,10 @@ class Dashboard extends StatelessWidget {
         await showDeletedDialog(context, controller);
       case 'browser':
         await showBrowserIntegrationDialog(context, controller);
+      case 'biometric':
+        message = await showBiometricDialog(context, controller);
+      case 'autofill':
+        await showAndroidAutofillDialog(context, controller);
       case 'signin':
         await showSignInDialog(
           context,
@@ -113,6 +117,10 @@ class Dashboard extends StatelessWidget {
               const PopupMenuItem(value: 'password', child: Text('Change master password…')),
               const PopupMenuItem(value: 'rotate', child: Text('Replace vault key…')),
               if (PlatformPaths.isDesktop) const PopupMenuItem(value: 'browser', child: Text('Browser integration…')),
+              if (controller.mobile != null) ...[
+                const PopupMenuItem(value: 'autofill', child: Text('Autofill…')),
+                const PopupMenuItem(value: 'biometric', child: Text('Biometric unlock…')),
+              ],
               const PopupMenuDivider(),
               if (state.signedIn)
                 const PopupMenuItem(value: 'signout', child: Text('Sign out of Google on this device'))
