@@ -267,7 +267,7 @@ enum SyncTask {
 
   /// Called from `application(_:didFinishLaunchingWithOptions:)`.
   static func register() {
-    BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+    _ = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
       guard let task = task as? BGAppRefreshTask else { return task.setTaskCompleted(success: false) }
       run(task)
     }

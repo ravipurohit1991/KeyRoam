@@ -50,16 +50,18 @@ final class KeyRoamEngine {
   private let freeFn: FreeFn
 
   private init?() {
+    var found: (CallFn, FreeFn)?
     for path in KeyRoamEngine.candidates() {
       guard let handle = dlopen(path, RTLD_NOW),
         let call = dlsym(handle, "keyroam_call"),
         let free = dlsym(handle, "keyroam_free_string")
       else { continue }
-      callFn = unsafeBitCast(call, to: CallFn.self)
-      freeFn = unsafeBitCast(free, to: FreeFn.self)
-      return
+      found = (unsafeBitCast(call, to: CallFn.self), unsafeBitCast(free, to: FreeFn.self))
+      break
     }
-    return nil
+    guard let fns = found else { return nil }
+    callFn = fns.0
+    freeFn = fns.1
   }
 
   /// Engine frameworks next to this executable or in the containing app.

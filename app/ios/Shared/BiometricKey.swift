@@ -128,7 +128,7 @@ enum BiometricKey {
       return data
     case errSecUserCanceled:
       throw KeyRoamError(code: "cancelled", message: "Cancelled")
-    case errSecItemNotFound, errSecInvalidData:
+    case errSecItemNotFound:
       // Enrolled biometrics changed: the item is gone or unusable.
       disable()
       throw KeyRoamError(
